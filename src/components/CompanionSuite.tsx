@@ -1,18 +1,20 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   Activity,
+  ArrowRightLeft,
+  Calculator,
   CheckCircle2,
-  Clock3,
+  ChevronDown,
+  Clipboard,
   FileSearch,
   Grid2X2,
   ListPlus,
   Loader2,
-  Music2,
-  Plus,
   Ruler,
   Trash2,
   UploadCloud,
   XCircle,
+  Zap,
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
@@ -49,11 +51,17 @@ type AssetHealthResponse = {
   profiles: Array<{
     file_name: string;
     file_size_mb: number;
+    vertex_count_estimate: number;
     estimated_density_score: number;
+    status_rating: 'Green' | 'Yellow' | 'Red';
+    internal_layers: string[];
     health_status: string;
     health_color: 'Green' | 'Yellow' | 'Red';
   }>;
 };
+
+type ScaleConverterMode = 'real-to-drawing' | 'drawing-to-real' | 'scale-to-scale' | 'find-scale';
+type UnitSystem = 'metric' | 'imperial';
 
 const paperSizes = [
   'A0', 'A1', 'A2', 'A3', 'A4', 'B0', 'B1', 'B2', 'B3', 'C0', 'C1', 'C2', 'C3',
@@ -62,13 +70,41 @@ const paperSizes = [
 ];
 
 const lineWeights = [
-  { label: 'Walls', range: '0.35-0.50mm', color: 'bg-cyan-300', commands: '_LWEIGHT\n0.50\nA-WALL' },
-  { label: 'Cut Objects', range: '0.30-0.40mm', color: 'bg-emerald-300', commands: '_LWEIGHT\n0.35\nA-CUT' },
-  { label: 'Furniture', range: '0.18-0.25mm', color: 'bg-sky-300', commands: '_LWEIGHT\n0.25\nA-FURN' },
-  { label: 'Hatching', range: '0.13-0.18mm', color: 'bg-zinc-300', commands: '_LWEIGHT\n0.15\nA-HATCH' },
-  { label: 'Annotations', range: '0.18-0.25mm', color: 'bg-violet-300', commands: '_LWEIGHT\n0.20\nA-ANNO' },
-  { label: 'Hidden Lines', range: '0.09-0.13mm', color: 'bg-amber-300', commands: '_LWEIGHT\n0.13\nA-HIDN' },
+  { label: 'Walls', range: '0.35-0.50mm', values: [0.35, 0.50], color: 'bg-cyan-300', layer: 'A-WALL' },
+  { label: 'Cut Objects', range: '0.30-0.40mm', values: [0.30, 0.35, 0.40], color: 'bg-emerald-300', layer: 'A-CUT' },
+  { label: 'Furniture', range: '0.18-0.25mm', values: [0.18, 0.20, 0.25], color: 'bg-sky-300', layer: 'A-FURN' },
+  { label: 'Hatching', range: '0.13-0.18mm', values: [0.13, 0.15, 0.18], color: 'bg-zinc-300', layer: 'A-HATCH' },
+  { label: 'Annotations', range: '0.18-0.25mm', values: [0.18, 0.20, 0.25], color: 'bg-violet-300', layer: 'A-ANNO' },
+  { label: 'Hidden Lines', range: '0.09-0.13mm', values: [0.09, 0.13], color: 'bg-amber-300', layer: 'A-HIDN' },
 ];
+
+type CompanionSuiteProps = {
+  onSelectCommand?: (command: { label: string; command: string }) => void;
+  onInjectOptimizationRules?: (rules: { deepPurge: boolean; purgeRegapps: boolean; overkill: boolean }) => void;
+};
+
+const scaleReferences = [
+  { scale: '1:1 (Full Size)', ratio: '1:1', use: 'Detail drawings' },
+  { scale: '1:2', ratio: '1:2', use: 'Large details' },
+  { scale: '1:5', ratio: '1:5', use: 'Construction details' },
+  { scale: '1:10', ratio: '1:10', use: 'Furniture and joinery details' },
+  { scale: '1:20', ratio: '1:20', use: 'Room details and sections' },
+  { scale: '1:25', ratio: '1:25', use: 'Room layouts' },
+  { scale: '1:50', ratio: '1:50', use: 'Floor plans, sections, elevations' },
+  { scale: '1:75', ratio: '1:75', use: 'Floor plans alternate' },
+  { scale: '1:100', ratio: '1:100', use: 'Floor plans and small site plans' },
+  { scale: '1:125', ratio: '1:125', use: 'Building overviews' },
+  { scale: '1:200', ratio: '1:200', use: 'Site plans and building overviews' },
+  { scale: '1:250', ratio: '1:250', use: 'Site plans' },
+  { scale: '1:500', ratio: '1:500', use: 'Site plans and urban context' },
+  { scale: '1:1000', ratio: '1:1000', use: 'Urban plans and mapping' },
+  { scale: '1:1250', ratio: '1:1250', use: 'Urban planning' },
+  { scale: '1:2500', ratio: '1:2500', use: 'City maps and master plans' },
+  { scale: '1:5000', ratio: '1:5000', use: 'Regional planning' },
+  { scale: '1:10000', ratio: '1:10000', use: 'Large area mapping' },
+];
+
+const commonScaleOptions = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 1250, 2500, 5000, 10000];
 
 function inputClass() {
   return 'w-full rounded-md border border-white/10 bg-[#11151b] px-3 py-2 text-sm text-zinc-100 outline-none transition focus:border-cyan-400/60 focus:ring-2 focus:ring-cyan-400/10';
@@ -78,6 +114,168 @@ function healthClass(color?: string) {
   if (color === 'Red') return 'border-red-300/30 bg-red-300/10 text-red-100';
   if (color === 'Yellow') return 'border-amber-300/30 bg-amber-300/10 text-amber-100';
   return 'border-emerald-300/30 bg-emerald-300/10 text-emerald-100';
+}
+
+function formatNumber(value: number, decimals = 2) {
+  if (!Number.isFinite(value)) return '--';
+  return value.toLocaleString(undefined, { maximumFractionDigits: decimals });
+}
+
+function ScaleConverterCard() {
+  const [unitSystem, setUnitSystem] = useState<UnitSystem>('metric');
+  const [mode, setMode] = useState<ScaleConverterMode>('real-to-drawing');
+  const [realSize, setRealSize] = useState(5);
+  const [drawingSize, setDrawingSize] = useState(50);
+  const [sourceDrawingSize, setSourceDrawingSize] = useState(120);
+  const [scaleFactor, setScaleFactor] = useState(100);
+  const [targetScaleFactor, setTargetScaleFactor] = useState(50);
+
+  const realUnit = unitSystem === 'metric' ? 'm' : 'ft';
+  const drawingUnit = unitSystem === 'metric' ? 'mm' : 'in';
+  const realToDrawing = unitSystem === 'metric'
+    ? (realSize * 1000) / scaleFactor
+    : (realSize * 12) / scaleFactor;
+  const drawingToReal = unitSystem === 'metric'
+    ? (drawingSize * scaleFactor) / 1000
+    : (drawingSize * scaleFactor) / 12;
+  const convertedScale = sourceDrawingSize * (scaleFactor / targetScaleFactor);
+  const foundScale = unitSystem === 'metric'
+    ? (realSize * 1000) / Math.max(drawingSize, 0.0001)
+    : (realSize * 12) / Math.max(drawingSize, 0.0001);
+
+  const resultText = {
+    'real-to-drawing': `${formatNumber(realToDrawing)} ${drawingUnit}`,
+    'drawing-to-real': `${formatNumber(drawingToReal)} ${realUnit}`,
+    'scale-to-scale': `${formatNumber(convertedScale)} ${drawingUnit}`,
+    'find-scale': `1:${Math.max(1, Math.round(foundScale))}`,
+  }[mode];
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-white">Architectural Scale Converter</h3>
+          <p className="mt-1 text-xs text-zinc-500">Convert real sizes, drawing sizes, and scale ratios before plotting.</p>
+        </div>
+        <Calculator className="h-5 w-5 text-cyan-300" />
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        {(['metric', 'imperial'] as UnitSystem[]).map((system) => (
+          <button
+            key={system}
+            className={`rounded-md px-3 py-2 text-xs font-semibold transition ${unitSystem === system ? 'bg-cyan-300 text-zinc-950' : 'border border-white/10 bg-[#11151b] text-zinc-300 hover:bg-white/[0.06]'}`}
+            onClick={() => setUnitSystem(system)}
+          >
+            {system === 'metric' ? 'Metric' : 'Imperial (US)'}
+          </button>
+        ))}
+      </div>
+
+      <div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          ['real-to-drawing', 'Real to Drawing'],
+          ['drawing-to-real', 'Drawing to Real'],
+          ['scale-to-scale', 'Scale to Scale'],
+          ['find-scale', 'Find Scale'],
+        ].map(([value, label]) => (
+          <button
+            key={value}
+            className={`inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-xs font-semibold transition ${mode === value ? 'bg-cyan-300 text-zinc-950' : 'border border-white/10 bg-[#11151b] text-zinc-300 hover:bg-white/[0.06]'}`}
+            onClick={() => setMode(value as ScaleConverterMode)}
+          >
+            <ArrowRightLeft className="h-3.5 w-3.5" />
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        {(mode === 'real-to-drawing' || mode === 'find-scale') && (
+          <label className="space-y-2">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Real size ({realUnit})</span>
+            <input className={inputClass()} type="number" min="0" value={realSize} onChange={(event) => setRealSize(Number(event.target.value))} />
+          </label>
+        )}
+
+        {(mode === 'drawing-to-real' || mode === 'find-scale') && (
+          <label className="space-y-2">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Drawing size ({drawingUnit})</span>
+            <input className={inputClass()} type="number" min="0" value={drawingSize} onChange={(event) => setDrawingSize(Number(event.target.value))} />
+          </label>
+        )}
+
+        {mode === 'scale-to-scale' && (
+          <label className="space-y-2">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Current drawing size ({drawingUnit})</span>
+            <input className={inputClass()} type="number" min="0" value={sourceDrawingSize} onChange={(event) => setSourceDrawingSize(Number(event.target.value))} />
+          </label>
+        )}
+
+        {mode !== 'find-scale' && (
+          <label className="space-y-2">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">{mode === 'scale-to-scale' ? 'From scale' : 'Scale'}</span>
+            <select className={inputClass()} value={scaleFactor} onChange={(event) => setScaleFactor(Number(event.target.value))}>
+              {commonScaleOptions.map((scale) => <option key={scale} value={scale}>1:{scale}</option>)}
+            </select>
+          </label>
+        )}
+
+        {mode === 'scale-to-scale' && (
+          <label className="space-y-2">
+            <span className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">To scale</span>
+            <select className={inputClass()} value={targetScaleFactor} onChange={(event) => setTargetScaleFactor(Number(event.target.value))}>
+              {commonScaleOptions.map((scale) => <option key={scale} value={scale}>1:{scale}</option>)}
+            </select>
+          </label>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-md border border-cyan-300/20 bg-cyan-300/10 p-4">
+        <p className="text-[11px] uppercase tracking-[0.14em] text-cyan-100/70">Result</p>
+        <p className="mt-1 text-2xl font-semibold text-cyan-100">{resultText}</p>
+        <p className="mt-2 text-xs text-cyan-100/70">
+          {unitSystem === 'metric'
+            ? 'Metric mode uses meters for real dimensions and millimeters for plotted drawings.'
+            : 'Imperial mode uses feet for real dimensions and inches for plotted drawings.'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function ScaleReferenceChart() {
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold text-white">Scale Reference Chart</h3>
+          <p className="mt-1 text-xs text-zinc-500">Common architectural plotting scales and their typical use cases.</p>
+        </div>
+        <Ruler className="h-5 w-5 text-cyan-300" />
+      </div>
+      <div className="max-h-[420px] overflow-y-auto rounded-md border border-white/10 [scrollbar-color:rgba(34,211,238,0.45)_rgba(255,255,255,0.06)] [scrollbar-width:thin]">
+        <table className="w-full border-collapse text-left text-xs">
+          <thead className="sticky top-0 bg-[#17202b] text-white">
+            <tr>
+              <th className="border-b border-white/10 px-3 py-3 font-semibold">Scale</th>
+              <th className="border-b border-white/10 px-3 py-3 font-semibold">Ratio</th>
+              <th className="border-b border-white/10 px-3 py-3 font-semibold">Common Use</th>
+            </tr>
+          </thead>
+          <tbody>
+            {scaleReferences.map((row) => (
+              <tr key={row.scale} className="border-b border-white/5 odd:bg-white/[0.02]">
+                <td className="px-3 py-3 font-medium text-zinc-100">{row.scale}</td>
+                <td className="px-3 py-3 font-mono text-cyan-200">{row.ratio}</td>
+                <td className="px-3 py-3 text-zinc-400">{row.use}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 function SheetPreview({ layoutBudget }: { layoutBudget: LayoutBudgetResponse }) {
@@ -182,8 +380,11 @@ function SheetPreview({ layoutBudget }: { layoutBudget: LayoutBudgetResponse }) 
   );
 }
 
-export default function CompanionSuite() {
+export default function CompanionSuite({ onSelectCommand, onInjectOptimizationRules }: CompanionSuiteProps) {
   const assetInputRef = useRef<HTMLInputElement>(null);
+  const [activeLineWeights, setActiveLineWeights] = useState<Record<string, number>>(
+    Object.fromEntries(lineWeights.map((item) => [item.label, item.values[item.values.length - 1]]))
+  );
   const [targetSheetSize, setTargetSheetSize] = useState('A1');
   const [views, setViews] = useState<BudgetView[]>([
     { id: crypto.randomUUID(), label: 'Plan', real_width_meters: 18, real_length_meters: 12, scale_factor: 100 },
@@ -195,22 +396,6 @@ export default function CompanionSuite() {
   const [assetHealth, setAssetHealth] = useState<AssetHealthResponse | null>(null);
   const [assetBusy, setAssetBusy] = useState(false);
   const [assetError, setAssetError] = useState('');
-  const [sessionSeconds, setSessionSeconds] = useState(25 * 60);
-  const [timerRunning, setTimerRunning] = useState(false);
-
-  useEffect(() => {
-    if (!timerRunning) return undefined;
-    const timer = window.setInterval(() => {
-      setSessionSeconds((current) => Math.max(0, current - 1));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [timerRunning]);
-
-  const timerLabel = useMemo(() => {
-    const minutes = Math.floor(sessionSeconds / 60).toString().padStart(2, '0');
-    const seconds = (sessionSeconds % 60).toString().padStart(2, '0');
-    return `${minutes}:${seconds}`;
-  }, [sessionSeconds]);
 
   function updateView(id: string, patch: Partial<BudgetView>) {
     setViews((current) => current.map((view) => view.id === id ? { ...view, ...patch } : view));
@@ -256,6 +441,16 @@ export default function CompanionSuite() {
     }
   }
 
+  function getLineWeightCommand(label: string, layer: string) {
+    const weight = activeLineWeights[label] ?? 0.25;
+    return `_LWEIGHT\n${weight.toFixed(2)}\n${layer}`;
+  }
+
+  async function copyLineWeightCommand(event: React.MouseEvent, command: string) {
+    event.stopPropagation();
+    await navigator.clipboard?.writeText(command);
+  }
+
   return (
     <section className="rounded-lg border border-white/10 bg-[#080a0d]">
       <div className="border-b border-white/10 px-5 py-4">
@@ -263,7 +458,10 @@ export default function CompanionSuite() {
         <p className="mt-1 text-xs text-zinc-500">Print budgeting, standards, asset health, and focus support.</p>
       </div>
 
-      <div className="grid gap-5 p-5 xl:grid-cols-[1.15fr_0.85fr]">
+      <div className="space-y-5 p-5">
+        <ScaleConverterCard />
+
+        <div className="grid gap-5 xl:grid-cols-[1.15fr_0.85fr]">
           <div className="space-y-5">
             <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
@@ -322,13 +520,77 @@ export default function CompanionSuite() {
                 Upload CAD Assets
               </button>
               {assetHealth && (
-                <div className={`mt-4 rounded-md border p-4 ${healthClass(assetHealth.overall_health_color)}`}>
-                  <p className="text-sm font-medium">{assetHealth.overall_health_status}</p>
-                  <p className="mt-1 text-xs">Auto toggles: PURGE {String(assetHealth.auto_toggle_flags.deep_purge)}, OVERKILL {String(assetHealth.auto_toggle_flags.overkill)}</p>
-                  <div className="mt-3 space-y-2">
-                    {assetHealth.profiles.map((profile) => (
-                      <div key={profile.file_name} className="rounded bg-black/20 px-3 py-2 text-xs">
-                        <span className="font-medium">{profile.file_name}</span> · {profile.file_size_mb} MB · score {profile.estimated_density_score}
+                <div className={`mt-4 rounded-lg border p-5 ${healthClass(assetHealth.overall_health_color)}`}>
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">{assetHealth.overall_health_status}</p>
+                      <p className="mt-1 text-xs opacity-75">Detected asset profiles ready for optimization</p>
+                    </div>
+                    {assetHealth.overall_health_color === 'Green' && <CheckCircle2 className="h-5 w-5 text-emerald-300" />}
+                    {assetHealth.overall_health_color === 'Yellow' && <Activity className="h-5 w-5 text-amber-300" />}
+                    {assetHealth.overall_health_color === 'Red' && <XCircle className="h-5 w-5 text-red-300" />}
+                  </div>
+
+                  <div className="space-y-3">
+                    {assetHealth.profiles.map((profile, idx) => (
+                      <div key={`${profile.file_name}-${idx}`} className="rounded-md border border-white/10 bg-black/20 p-3">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-white">{profile.file_name}</p>
+                            <p className="mt-1 text-xs text-zinc-400">{profile.extension} • {profile.file_size_mb} MB</p>
+                          </div>
+                          <div className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-semibold ${
+                            profile.status_rating === 'Green' ? 'border-emerald-300/30 bg-emerald-300/10 text-emerald-200' :
+                            profile.status_rating === 'Yellow' ? 'border-amber-300/30 bg-amber-300/10 text-amber-100' :
+                            'border-red-300/30 bg-red-300/10 text-red-100'
+                          }`}>
+                            {profile.status_rating === 'Green' && <CheckCircle2 className="h-3 w-3" />}
+                            {profile.status_rating === 'Yellow' && <Activity className="h-3 w-3" />}
+                            {profile.status_rating === 'Red' && <XCircle className="h-3 w-3" />}
+                            {profile.status_rating === 'Green' ? 'Low-Poly' : profile.status_rating === 'Yellow' ? 'Medium-Poly' : 'High-Poly Bloat'}
+                          </div>
+                        </div>
+
+                        <div className="mb-3 grid grid-cols-2 gap-2">
+                          <div className="rounded bg-black/30 p-2">
+                            <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">File Size</p>
+                            <p className={`mt-1 text-sm font-semibold ${
+                              profile.file_size_mb < 5 ? 'text-emerald-200' :
+                              profile.file_size_mb < 20 ? 'text-amber-200' :
+                              'text-red-200'
+                            }`}>{profile.file_size_mb} MB</p>
+                          </div>
+                          <div className="rounded bg-black/30 p-2">
+                            <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Vertex Count</p>
+                            <p className="mt-1 text-sm font-semibold text-cyan-200">{profile.vertex_count_estimate.toLocaleString()}</p>
+                          </div>
+                        </div>
+
+                        {profile.internal_layers.length > 0 && (
+                          <details className="rounded bg-black/30 p-2">
+                            <summary className="cursor-pointer flex items-center justify-between text-xs font-medium text-zinc-300 hover:text-white">
+                              <span>Internal Layers ({profile.internal_layers.length})</span>
+                              <ChevronDown className="h-3 w-3" />
+                            </summary>
+                            <div className="mt-2 max-h-48 space-y-1 overflow-y-auto pr-2 [scrollbar-color:rgba(34,211,238,0.45)_rgba(255,255,255,0.06)] [scrollbar-width:thin]">
+                              {profile.internal_layers.map((layer, lidx) => (
+                                <div key={`${layer}-${lidx}`} className="text-[11px] text-zinc-400 font-mono">
+                                  {layer}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+
+                        {(profile.status_rating === 'Yellow' || profile.status_rating === 'Red') && (
+                          <button
+                            onClick={() => onInjectOptimizationRules?.({ deepPurge: true, purgeRegapps: true, overkill: profile.status_rating === 'Red' })}
+                            className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-md border border-cyan-300/30 bg-cyan-300/10 px-3 py-2 text-xs font-semibold text-cyan-200 transition hover:bg-cyan-300/20"
+                          >
+                            <Zap className="h-3.5 w-3.5" />
+                            Auto-Inject Optimization Rules
+                          </button>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -339,59 +601,74 @@ export default function CompanionSuite() {
           </div>
 
           <div className="space-y-5">
+            <ScaleReferenceChart />
+
             <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="text-base font-semibold text-white">Standard Line Weight Catalog</h3>
                 <FileSearch className="h-5 w-5 text-cyan-300" />
               </div>
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                {lineWeights.map((item) => (
-                  <div key={item.label} className="rounded-md border border-white/10 bg-[#11151b] p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="flex items-center gap-2 text-sm font-medium text-white">
-                        <span className={`h-2.5 w-8 rounded-full ${item.color}`} />
-                        {item.label}
-                      </span>
-                      <span className="text-xs text-zinc-400">{item.range}</span>
-                    </div>
-                    <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] leading-5 text-zinc-500">{item.commands}</pre>
-                  </div>
-                ))}
+              <div className="grid max-h-[520px] gap-3 overflow-y-auto pr-2 sm:grid-cols-2 xl:grid-cols-1 [scrollbar-color:rgba(34,211,238,0.45)_rgba(255,255,255,0.06)] [scrollbar-width:thin]">
+                {lineWeights.map((item) => {
+                  const activeWeight = activeLineWeights[item.label] ?? item.values[0];
+                  const command = getLineWeightCommand(item.label, item.layer);
+                  const previewHeight = Math.max(1, Math.round(activeWeight * 8));
+
+                  return (
+                    <button
+                      key={item.label}
+                      className="rounded-md border border-white/10 bg-[#11151b] p-3 text-left transition hover:border-cyan-300/40 hover:bg-cyan-300/10"
+                      onClick={() => onSelectCommand?.({ label: `${item.label} line weight ${activeWeight.toFixed(2)}mm`, command })}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <span className="flex items-center gap-2 text-sm font-medium text-white">
+                            <span className={`h-2.5 w-8 rounded-full ${item.color}`} />
+                            {item.label}
+                          </span>
+                          <div className="mt-2 h-4 rounded bg-black/20 px-1 py-1">
+                            <div
+                              className={`w-full ${item.color.replace('bg-', 'border-')}`}
+                              style={{ borderBottomWidth: `${previewHeight}px` }}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <select
+                            className="rounded-md border border-white/10 bg-[#080a0d] px-2 py-1 text-xs text-zinc-200 outline-none focus:border-cyan-300/60"
+                            value={activeWeight}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              event.stopPropagation();
+                              setActiveLineWeights((current) => ({ ...current, [item.label]: Number(event.target.value) }));
+                            }}
+                          >
+                            {item.values.map((value) => (
+                              <option key={value} value={value}>{value.toFixed(2)}mm</option>
+                            ))}
+                          </select>
+                          <button
+                            className="rounded-md border border-white/10 bg-white/[0.04] p-1.5 text-zinc-400 transition hover:border-cyan-300/40 hover:text-cyan-200"
+                            onClick={(event) => copyLineWeightCommand(event, command)}
+                            title="Copy AutoCAD command"
+                          >
+                            <Clipboard className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex items-center justify-between gap-3">
+                        <span className="text-xs text-zinc-500">{item.range}</span>
+                        <span className="text-xs font-medium text-cyan-200">{activeWeight.toFixed(2)}mm active</span>
+                      </div>
+                      <pre className="mt-2 whitespace-pre-wrap font-mono text-[11px] leading-5 text-zinc-500">{command}</pre>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <h3 className="text-base font-semibold text-white">Focus Hub Widget</h3>
-                <Clock3 className="h-5 w-5 text-cyan-300" />
-              </div>
-              <div className="rounded-md border border-white/10 bg-[#11151b] p-4">
-                <div className="flex items-center gap-3">
-                  <div className="grid h-12 w-12 place-items-center rounded-md border border-cyan-300/30 bg-cyan-300/10">
-                    <Music2 className="h-5 w-5 text-cyan-300" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-white">OPM Studio Playlist</p>
-                    <p className="text-xs text-zinc-500">Visual placeholder for a future embedded focus mix.</p>
-                  </div>
-                </div>
-                <div className="mt-5 text-center">
-                  <p className="font-mono text-4xl font-semibold text-white">{timerLabel}</p>
-                  <div className="mt-4 flex justify-center gap-2">
-                    <button className="rounded-md bg-cyan-300 px-3 py-2 text-sm font-semibold text-zinc-950" onClick={() => setTimerRunning((current) => !current)}>
-                      {timerRunning ? 'Pause' : 'Start'}
-                    </button>
-                    <button className="rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-zinc-200" onClick={() => { setTimerRunning(false); setSessionSeconds(25 * 60); }}>
-                      Reset
-                    </button>
-                    <button className="rounded-md border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-medium text-zinc-200" onClick={() => setSessionSeconds((current) => current + 5 * 60)}>
-                      <Plus className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
           </div>
+        </div>
       </div>
     </section>
   );

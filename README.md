@@ -14,10 +14,12 @@ Minimal full-stack framework for architecture students working with CAD assets, 
 - `POST /compute-scale` validates real-world dimensions against A0-A3 printable sheet boundaries and recommends safer scales when needed.
 - `POST /compute-layout` returns golden-ratio and rule-of-thirds presentation-board zones.
 - `POST /generate-workflow-script` streams `Optimize_Project.scr` with audit, deep purge, layer realignment, custom commands, and quick save.
-- `POST /api/v1/autocad/generate-script` streams a checklist-driven `Custom_ArchiVault_Clean.scr` file attachment.
+- `POST /api/v1/autocad/generate-script` generates a checklist-driven AutoCAD script and returns it as a ZIP archive (`ArchiVault_Automation.zip` containing `ArchiVault_Execute.scr`) to bypass browser security warnings for `.scr` files.
 - `POST /api/v1/autocad/save-script` compiles the checklist-driven script directly to the Desktop to avoid browser `.scr` download warnings.
 - `POST /api/v1/scale/layout-budget` validates multiple scaled drawing views against common ISO, ANSI, Arch, and office paper sizes, returning coordinate boxes and an AutoCAD paper-space boundary script.
 - `POST /api/v1/assets/analyze-weight` inspects uploaded CAD asset profiles and returns Low-Poly, Medium-Poly, or High-Poly Bloat health with optimization flags.
+- `POST /api/v1/drafting/generate-layout` streams `ArchiVault_Floor_Plan_Layout.scr` for parametric floor-plan grids, wall outlines, and A-COLM column placeholders.
+- `POST /api/v1/environmental/export-vector-script` generates a trigonometric North Arrow and colored wind/sun vector diagram (Amihan in cyan, Habagat in green, Morning Sun in yellow) based on site orientation angle. Returns as a ZIP archive (`Site_Analysis_Vectors.zip`) containing the AutoCAD script for seamless browser download.
 
 ## Run Locally
 

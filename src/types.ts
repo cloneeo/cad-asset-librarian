@@ -28,7 +28,7 @@ export interface CustomCommand {
   enabled: boolean;
 }
 
-export type ActiveTab = 'vault' | 'lab' | 'automation' | 'studio';
+export type ActiveTab = 'vault' | 'floorplan' | 'lab' | 'compliance' | 'automation' | 'studio';
 
 export interface ExternalDWGProvider {
   name: string;

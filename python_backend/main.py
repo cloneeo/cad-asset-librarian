@@ -1,11 +1,13 @@
 import os
 import shutil
 import threading
+import zipfile
+import math
 from pathlib import Path
 from datetime import datetime
 from typing import List, Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 import io
 from PIL import Image
@@ -450,6 +452,13 @@ class AutoCADScriptRequest(BaseModel):
     flatten_2d_linework: bool = False
     consolidate_geometry: bool = False
     bind_xrefs: bool = False
+    purge_regapps: bool = True
+    inject_pdf_plot_macro: bool = False
+    normalize_layers: bool = False
+    reset_annotation_scales: bool = False
+    cleanup_proxy_objects: bool = False
+    repair_draw_order: bool = False
+    regen_viewports: bool = True
     auto_save_close: bool = True
     custom_commands: List[str] = []
 
@@ -466,6 +475,66 @@ class LayoutBudgetRequest(BaseModel):
     drawings: List[LayoutBudgetDrawing] = Field(min_length=1)
     margin_padding_mm: float = Field(default=20, ge=0)
     gap_mm: float = Field(default=12, ge=0)
+
+
+class DraftingLayoutRequest(BaseModel):
+    total_width_meters: float = Field(gt=0)
+    total_length_meters: float = Field(gt=0)
+    wall_thickness_mm: float = Field(default=150, gt=0)
+    column_width_mm: float = Field(default=300, gt=0)
+    column_depth_mm: float = Field(default=300, gt=0)
+    grid_spacings: List[float] = Field(min_length=1)
+
+
+class PD1096ComplianceRequest(BaseModel):
+    lot_area_sqm: float = Field(gt=0)
+    lot_type: str = Field(pattern="^(inside|corner|through)$")
+    zoning: str = Field(pattern="^(r1|r2|r3)$")
+
+
+class TileEstimateRequest(BaseModel):
+    room_width_meters: float = Field(gt=0)
+    room_length_meters: float = Field(gt=0)
+    tile_size_mm: float = Field(default=600, gt=0)
+    wastage_percent: float = Field(default=10, ge=0, le=100)
+
+
+
+def create_safety_backup(source_file_path: str, project_name: str = "Default") -> Optional[str]:
+    """
+    Create a timestamped safety backup of a CAD drawing file.
+    
+    Args:
+        source_file_path: Full path to the source DWG/DWF file
+        project_name: Project name for backup folder organization
+        
+    Returns:
+        Path to the backup file if successful, None if file not found
+    """
+    try:
+        source = Path(source_file_path)
+        
+        # Verify source file exists
+        if not source.exists():
+            return None
+        
+        # Create backup directory structure
+        backup_dir = source.parent / f"{project_name}_Backups"
+        backup_subdir = backup_dir / "01_CAD_Drafts" / "Backups"
+        backup_subdir.mkdir(parents=True, exist_ok=True)
+        
+        # Create timestamped filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        backup_filename = f"{source.stem}_SAFETY_BACKUP_{timestamp}{source.suffix}"
+        backup_path = backup_subdir / backup_filename
+        
+        # Copy file with timestamp
+        shutil.copy2(source, backup_path)
+        
+        return str(backup_path)
+    except Exception as e:
+        # Gracefully handle backup failures - don't interrupt main workflow
+        return None
 
 
 def build_legacy_script(custom_commands: List[str], purge_all: bool, audit_fixes: bool, quick_save: bool) -> str:
@@ -506,6 +575,29 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
         "",
     ]
 
+    # Check if any destructive operations are enabled
+    destructive_operations = [
+        request.audit_fix,
+        request.deep_purge,
+        request.overkill,
+        request.flatten_2d_linework,
+        request.bind_xrefs,
+        request.purge_regapps,
+        request.cleanup_proxy_objects,
+        request.repair_draw_order,
+    ]
+    
+    # Inject PRE-FLIGHT SAFETY SAVE before destructive operations
+    if any(destructive_operations):
+        lines.extend([
+            "; ================================================",
+            "; [Pre-Flight Safety Save]",
+            "; Saving current drawing state before optimization",
+            "; ================================================",
+            "_QSAVE",
+            "",
+        ])
+
     if request.audit_fix:
         lines.extend([
             "; [1] Audit and Fix Errors",
@@ -520,6 +612,16 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
             "_-PURGE",
             "_A",
             "_*",
+            "_N",
+            "",
+        ])
+
+    if request.purge_regapps:
+        lines.extend([
+            "; [3] Purge Regapps - Deep Registry Clean",
+            "_-PURGE",
+            "_R",
+            "*",
             "_N",
             "",
         ])
@@ -549,6 +651,82 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
             "_-XREF",
             "_BIND",
             "*",
+            "",
+        ])
+
+    if request.normalize_layers:
+        lines.extend([
+            "; [8] Layer State Normalization",
+            "_-LAYER",
+            "_ON",
+            "_*",
+            "_THAW",
+            "_*",
+            "_UNLOCK",
+            "_*",
+            "",
+        ])
+
+    if request.reset_annotation_scales:
+        lines.extend([
+            "; [9] Annotation Scale Cleanup",
+            "_-SCALELISTEDIT",
+            "_R",
+            "_Y",
+            "_E",
+            "",
+        ])
+
+    if request.cleanup_proxy_objects:
+        lines.extend([
+            "; [10] Proxy Object Display Stabilization",
+            "_PROXYSHOW",
+            "1",
+            "_PROXYGRAPHICS",
+            "1",
+            "",
+        ])
+
+    if request.repair_draw_order:
+        lines.extend([
+            "; [11] Draw Order Repair",
+            "_DRAWORDER",
+            "_ALL",
+            "",
+            "_F",
+            "",
+        ])
+
+    if request.regen_viewports:
+        lines.extend([
+            "; [12] Viewport Regeneration",
+            "_REGENALL",
+            "",
+        ])
+
+    if request.inject_pdf_plot_macro:
+        lines.extend([
+            "; [13] Quick PDF Plot Macro",
+            "_-PLOT",
+            "_Y",
+            "",
+            "DWG To PDF.pc3",
+            "ISO full bleed A1 (841.00 x 594.00 MM)",
+            "_M",
+            "_L",
+            "_N",
+            "_W",
+            "0,0",
+            "841,594",
+            "_F",
+            "_C",
+            "_Y",
+            "monochrome.ctb",
+            "_Y",
+            "_A",
+            f"{str(get_desktop_path() / 'ArchiVault_Quick_Plot.pdf')}",
+            "_N",
+            "_Y",
             "",
         ])
 
@@ -706,27 +884,55 @@ def analyze_asset_bytes(filename: str, data: bytes) -> dict:
     extension = Path(filename).suffix.lower()
     line_count = data.count(b"\n")
     density_score = size_mb
+    vertex_count = 0
+    internal_layers = []
 
     if extension == ".obj":
         vertex_count = data.count(b"\nv ") + (1 if data.startswith(b"v ") else 0)
         face_count = data.count(b"\nf ") + (1 if data.startswith(b"f ") else 0)
         density_score = size_mb + (vertex_count / 20000) + (face_count / 15000)
+        
+        # Extract group/object names as "layers" from OBJ
+        try:
+            text_data = data.decode('utf-8', errors='ignore')
+            for line in text_data.split('\n'):
+                if line.startswith('g ') or line.startswith('o '):
+                    layer_name = line[2:].strip()
+                    if layer_name and layer_name not in internal_layers:
+                        internal_layers.append(layer_name)
+        except:
+            pass
     elif extension == ".dwg":
         density_score = size_mb * 1.35 + min(line_count / 20000, 4)
+        # Rough estimate: assume 1 entity per ~500 bytes for DWG
+        vertex_count = int(len(data) / 500)
     else:
         density_score = size_mb + min(line_count / 30000, 2)
+        try:
+            text_data = data.decode('utf-8', errors='ignore')
+            for line in text_data.split('\n'):
+                if any(marker in line.lower() for marker in ['layer', 'group', 'component']):
+                    if ':' in line:
+                        layer_name = line.split(':')[1].strip()
+                        if layer_name and len(layer_name) < 100 and layer_name not in internal_layers:
+                            internal_layers.append(layer_name)
+        except:
+            pass
 
     if density_score < 6:
         health = "Low-Poly"
         color = "Green"
+        status_rating = "Green"
         required_flags = {"deep_purge": False, "overkill": False}
     elif density_score < 14:
         health = "Medium-Poly"
         color = "Yellow"
+        status_rating = "Yellow"
         required_flags = {"deep_purge": True, "overkill": False}
     else:
         health = "High-Poly Bloat"
         color = "Red"
+        status_rating = "Red"
         required_flags = {"deep_purge": True, "overkill": True}
 
     return {
@@ -735,10 +941,271 @@ def analyze_asset_bytes(filename: str, data: bytes) -> dict:
         "file_size_mb": round(size_mb, 2),
         "extension": extension or "unknown",
         "estimated_density_score": round(density_score, 2),
+        "vertex_count_estimate": vertex_count,
+        "status_rating": status_rating,
+        "internal_layers": internal_layers[:20],  # Limit to 20 layers for display
         "health_status": health,
         "health_color": color,
         "required_optimization_flags": required_flags,
     }
+
+
+def build_floor_plan_layout_script(request: DraftingLayoutRequest) -> str:
+    width_mm = round(request.total_width_meters * 1000, 2)
+    length_mm = round(request.total_length_meters * 1000, 2)
+    wall_offset = round(request.wall_thickness_mm, 2)
+    column_half_w = round(request.column_width_mm / 2, 2)
+    column_half_d = round(request.column_depth_mm / 2, 2)
+
+    x_axes = [0.0]
+    cursor = 0.0
+    for spacing in request.grid_spacings:
+        if spacing <= 0:
+            raise HTTPException(status_code=400, detail="Grid spacings must be positive meter values.")
+        cursor += spacing * 1000
+        if cursor < width_mm:
+            x_axes.append(round(cursor, 2))
+    if x_axes[-1] != width_mm:
+        x_axes.append(width_mm)
+
+    y_axes = [0.0]
+    cursor = 0.0
+    for spacing in request.grid_spacings:
+        cursor += spacing * 1000
+        if cursor < length_mm:
+            y_axes.append(round(cursor, 2))
+    if y_axes[-1] != length_mm:
+        y_axes.append(length_mm)
+
+    lines = [
+        "; ================================================",
+        "; ArchiVault Floor Plan Lab - Parametric Layout",
+        "; Generated from /api/v1/drafting/generate-layout",
+        "; ================================================",
+        "",
+        "; [0] Drafting layer setup",
+        "_-LAYER",
+        "_M",
+        "A-WALL",
+        "_C",
+        "7",
+        "A-WALL",
+        "",
+        "_-LAYER",
+        "_M",
+        "A-GRID",
+        "_C",
+        "8",
+        "A-GRID",
+        "",
+        "_-LAYER",
+        "_M",
+        "A-COLM",
+        "_C",
+        "2",
+        "A-COLM",
+        "",
+        "; [1] Building footprint outline",
+        "_-LAYER",
+        "_S",
+        "A-WALL",
+        "",
+        "_RECTANGLE",
+        "0,0",
+        f"{width_mm},{length_mm}",
+        "_OFFSET",
+        f"{wall_offset}",
+        "_LAST",
+        "",
+        f"{wall_offset},{wall_offset}",
+        "",
+        "; [2] Vertical structural grid axes",
+        "_-LAYER",
+        "_S",
+        "A-GRID",
+        "",
+    ]
+
+    for x_axis in x_axes:
+        lines.extend([
+            "_XLINE",
+            "_V",
+            f"{x_axis},0",
+            "",
+        ])
+
+    lines.append("; [3] Horizontal structural grid axes")
+    for y_axis in y_axes:
+        lines.extend([
+            "_XLINE",
+            "_H",
+            f"0,{y_axis}",
+            "",
+        ])
+
+    lines.extend([
+        "; [4] Column placeholders on A-COLM",
+        "_-LAYER",
+        "_S",
+        "A-COLM",
+        "",
+    ])
+
+    for x_axis in x_axes:
+        for y_axis in y_axes:
+            x1 = round(x_axis - column_half_w, 2)
+            y1 = round(y_axis - column_half_d, 2)
+            x2 = round(x_axis + column_half_w, 2)
+            y2 = round(y_axis + column_half_d, 2)
+            lines.extend([
+                "_RECTANG",
+                f"{x1},{y1}",
+                f"{x2},{y2}",
+                "_HATCH",
+                "_P",
+                "SOLID",
+                "_S",
+                "_LAST",
+                "",
+                "",
+            ])
+
+    lines.extend([
+        "; [5] Regenerate final layout",
+        "_REGENALL",
+        "",
+    ])
+
+    return "\n".join(lines) + "\n"
+
+
+PD1096_RESIDENTIAL_RULES = {
+    "r1": {
+        "label": "R-1 Low Density Residential",
+        "tosl_percent": {"inside": 50, "corner": 40, "through": 40},
+        "setbacks_m": {"front": 4.5, "side": 2.0, "rear": 2.0},
+    },
+    "r2": {
+        "label": "R-2 Medium Density Residential",
+        "tosl_percent": {"inside": 40, "corner": 35, "through": 35},
+        "setbacks_m": {"front": 3.0, "side": 2.0, "rear": 2.0},
+    },
+    "r3": {
+        "label": "R-3 High Density Residential",
+        "tosl_percent": {"inside": 30, "corner": 25, "through": 25},
+        "setbacks_m": {"front": 3.0, "side": 2.0, "rear": 2.0},
+    },
+}
+
+
+def compute_pd1096_compliance(request: PD1096ComplianceRequest) -> dict:
+    zoning_key = request.zoning.lower()
+    lot_type_key = request.lot_type.lower()
+    rule = PD1096_RESIDENTIAL_RULES[zoning_key]
+    tosl_percent = rule["tosl_percent"][lot_type_key]
+    open_space_sqm = request.lot_area_sqm * (tosl_percent / 100)
+    ambf_sqm = request.lot_area_sqm - open_space_sqm
+
+    setbacks = dict(rule["setbacks_m"])
+    if lot_type_key == "corner":
+        setbacks["corner_side"] = setbacks["front"]
+    if lot_type_key == "through":
+        setbacks["secondary_front"] = setbacks["front"]
+
+    return {
+        "status": "success",
+        "code_reference": "PD 1096 National Building Code of the Philippines - Rule VII/VIII planning aid",
+        "input": {
+            "lot_area_sqm": request.lot_area_sqm,
+            "lot_type": lot_type_key,
+            "zoning": zoning_key,
+        },
+        "zoning_label": rule["label"],
+        "tosl": {
+            "percentage": tosl_percent,
+            "required_open_space_sqm": round(open_space_sqm, 2),
+            "formula": f"{request.lot_area_sqm} sqm x {tosl_percent}%",
+        },
+        "ambf": {
+            "allowable_maximum_building_footprint_sqm": round(ambf_sqm, 2),
+            "formula": "Lot Area - Required Open Space",
+        },
+        "setbacks_m": setbacks,
+        "notes": [
+            "Use this as a studio planning aid before official code review.",
+            "Local zoning ordinances, easements, firewalls, and subdivision restrictions can require stricter limits.",
+        ],
+    }
+
+
+def build_tile_grid_script(request: TileEstimateRequest) -> tuple[str, dict]:
+    room_width_mm = request.room_width_meters * 1000
+    room_length_mm = request.room_length_meters * 1000
+    tile_area_sqm = (request.tile_size_mm / 1000) ** 2
+    room_area_sqm = request.room_width_meters * request.room_length_meters
+    raw_tile_count = room_area_sqm / tile_area_sqm
+    tiles_with_wastage = raw_tile_count * (1 + (request.wastage_percent / 100))
+    tiles_x = int((room_width_mm + request.tile_size_mm - 0.0001) // request.tile_size_mm)
+    tiles_y = int((room_length_mm + request.tile_size_mm - 0.0001) // request.tile_size_mm)
+
+    lines = [
+        "; ================================================",
+        "; ArchiVault Quantity Lab - Tile Grid Array",
+        "; Generated from /api/v1/quantity/tile-estimate",
+        "; ================================================",
+        "",
+        "; [0] Layer setup",
+        "_-LAYER",
+        "_M",
+        "A-TILE-GRID",
+        "_C",
+        "8",
+        "A-TILE-GRID",
+        "",
+        "; [1] Room boundary",
+        "_RECTANGLE",
+        "0,0",
+        f"{round(room_width_mm, 2)},{round(room_length_mm, 2)}",
+        "",
+        "; [2] Vertical tile joints",
+    ]
+
+    for index in range(tiles_x + 1):
+        x = min(index * request.tile_size_mm, room_width_mm)
+        lines.extend([
+            "_LINE",
+            f"{round(x, 2)},0",
+            f"{round(x, 2)},{round(room_length_mm, 2)}",
+            "",
+        ])
+
+    lines.append("; [3] Horizontal tile joints")
+    for index in range(tiles_y + 1):
+        y = min(index * request.tile_size_mm, room_length_mm)
+        lines.extend([
+            "_LINE",
+            f"0,{round(y, 2)}",
+            f"{round(room_width_mm, 2)},{round(y, 2)}",
+            "",
+        ])
+
+    lines.extend([
+        "; [4] Regenerate tile layout",
+        "_REGENALL",
+        "",
+    ])
+
+    summary = {
+        "room_area_sqm": round(room_area_sqm, 2),
+        "tile_area_sqm": round(tile_area_sqm, 4),
+        "raw_tiles_required": round(raw_tile_count, 2),
+        "recommended_tiles_with_wastage": int(tiles_with_wastage + 0.9999),
+        "grid_columns": tiles_x,
+        "grid_rows": tiles_y,
+        "tile_size_mm": request.tile_size_mm,
+        "wastage_percent": request.wastage_percent,
+    }
+    return "\n".join(lines) + "\n", summary
 
 
 @app.post("/generate-render-script")
@@ -770,10 +1237,20 @@ def generate_workflow_script(request: WorkflowScriptRequest):
 @app.post("/api/v1/autocad/generate-script")
 def generate_custom_autocad_script(request: AutoCADScriptRequest):
     script_content = build_custom_autocad_script(request)
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr('ArchiVault_Execute.scr', script_content, compress_type=zipfile.ZIP_DEFLATED)
+    
+    zip_buffer.seek(0)
     headers = {
-        "Content-Disposition": 'attachment; filename="Custom_ArchiVault_Clean.scr"'
+        "Content-Disposition": 'attachment; filename="ArchiVault_Automation.zip"'
     }
-    return Response(content=script_content, media_type="text/plain; charset=utf-8", headers=headers)
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers=headers
+    )
 
 
 @app.post("/api/v1/autocad/save-script")
@@ -820,6 +1297,32 @@ async def analyze_asset_weight(files: List[UploadFile] = File(...)):
         "overall_health_color": worst_profile["health_color"],
         "auto_toggle_flags": auto_flags,
         "profiles": profiles,
+    }
+
+
+@app.post("/api/v1/drafting/generate-layout")
+def generate_drafting_layout(request: DraftingLayoutRequest):
+    script_content = build_floor_plan_layout_script(request)
+    headers = {
+        "Content-Disposition": 'attachment; filename="ArchiVault_Floor_Plan_Layout.scr"',
+        "X-Content-Type-Options": "nosniff"
+    }
+    return Response(content=script_content, media_type="text/plain; charset=utf-8", headers=headers)
+
+
+@app.post("/api/v1/compliance/pd1096")
+def compute_pd1096_route(request: PD1096ComplianceRequest):
+    return compute_pd1096_compliance(request)
+
+
+@app.post("/api/v1/quantity/tile-estimate")
+def compute_tile_estimate(request: TileEstimateRequest):
+    script_content, summary = build_tile_grid_script(request)
+    return {
+        "status": "success",
+        "file_name": "ArchiVault_Tile_Grid.scr",
+        "summary": summary,
+        "autocad_script": script_content,
     }
 
 
@@ -1084,3 +1587,307 @@ async def search_image(
         "matches": results[:5],
         "total_matches": len(results)
     }
+
+
+class EnvironmentalVectorRequest(BaseModel):
+    north_angle: float = Field(..., ge=0, le=360, description="North orientation angle in degrees")
+
+
+@app.post("/api/v1/environmental/export-vector-script")
+def export_environmental_vectors(request: EnvironmentalVectorRequest):
+    """
+    Generate AutoCAD script with environmental vectors (North Arrow, Amihan, Habagat, Morning Sun).
+    Returns a ZIP archive containing the .scr file for easy browser download without security warnings.
+    """
+    north_angle = request.north_angle
+    
+    # Calculate vector angles relative to rotated north
+    amihan_angle = 45  # NE wind, relative to north
+    habagat_angle = 225  # SW monsoon, relative to north
+    morning_sun_angle = 90  # East, relative to north
+    
+    # Adjust for site orientation
+    amihan_rotated = (amihan_angle + north_angle) % 360
+    habagat_rotated = (habagat_angle + north_angle) % 360
+    morning_sun_rotated = (morning_sun_angle + north_angle) % 360
+    
+    # Build AutoCAD script
+    script_lines = [
+        "\"Environmental Site Analysis Vectors\"",
+        ";Generated by ArchiVault - Passive Cooling Design Advisory",
+        ";North angle: " + str(north_angle) + " degrees",
+        "",
+        ";Set drawing units and viewport",
+        "_UNITS",
+        "4",
+        "",
+        ";Draw North Arrow at center (0,0,0)",
+        ";North arrow polygon - 0.5 unit triangle",
+        "_POLYGON",
+        "3",
+        "0,0",
+        "0.35,0.15",
+        "-0.35,0.15",
+        "",
+        ";Rotate north arrow to site orientation",
+        "_ROTATE",
+        "_PREVIOUS",
+        "0,0",
+        str(north_angle),
+        "",
+        ";Add North label",
+        "_TEXT",
+        "0,0.65",
+        "0.25",
+        str(north_angle),
+        "N",
+        "",
+        ";Draw Amihan vector (NE wind - CYAN)",
+        ";Set color to cyan (color index 5)",
+        "_COLOR",
+        "5",
+        ";Draw dashed line",
+        "_LINETYPE",
+        "_DASHED",
+        "",
+        ";Calculate endpoint for Amihan vector (1.2 units in direction)",
+        ";Using sine/cosine for trig calculation",
+    ]
+    
+    # Convert angles to radians for trig
+    amihan_rad = math.radians(amihan_rotated)
+    habagat_rad = math.radians(habagat_rotated)
+    morning_sun_rad = math.radians(morning_sun_rotated)
+    
+    # Amihan endpoint (cyan vector)
+    amihan_x = 1.2 * math.cos(amihan_rad)
+    amihan_y = 1.2 * math.sin(amihan_rad)
+    
+    script_lines.extend([
+        "_LINE",
+        "0,0",
+        str(round(amihan_x, 3)) + "," + str(round(amihan_y, 3)),
+        "",
+        ";Add Amihan label",
+        "_TEXT",
+        str(round(amihan_x * 0.6, 3)) + "," + str(round(amihan_y * 0.6, 3)),
+        "0.2",
+        "0",
+        "AMIHAN",
+        "",
+        ";Draw Habagat vector (SW monsoon - GREEN)",
+        "_COLOR",
+        "3",
+        "",
+    ])
+    
+    # Habagat endpoint (green vector)
+    habagat_x = 1.2 * math.cos(habagat_rad)
+    habagat_y = 1.2 * math.sin(habagat_rad)
+    
+    script_lines.extend([
+        "_LINE",
+        "0,0",
+        str(round(habagat_x, 3)) + "," + str(round(habagat_y, 3)),
+        "",
+        ";Add Habagat label",
+        "_TEXT",
+        str(round(habagat_x * 0.6, 3)) + "," + str(round(habagat_y * 0.6, 3)),
+        "0.2",
+        "0",
+        "HABAGAT",
+        "",
+        ";Draw Morning Sun vector (EAST - YELLOW)",
+        "_COLOR",
+        "2",
+        "",
+    ])
+    
+    # Morning Sun endpoint (yellow vector)
+    morning_sun_x = 1.0 * math.cos(morning_sun_rad)
+    morning_sun_y = 1.0 * math.sin(morning_sun_rad)
+    
+    script_lines.extend([
+        "_LINE",
+        "0,0",
+        str(round(morning_sun_x, 3)) + "," + str(round(morning_sun_y, 3)),
+        "",
+        ";Add Morning Sun label",
+        "_TEXT",
+        str(round(morning_sun_x * 0.55, 3)) + "," + str(round(morning_sun_y * 0.55, 3)),
+        "0.2",
+        "0",
+        "MORNING SUN",
+        "",
+        ";Reset to continuous line and default color",
+        "_LINETYPE",
+        "_CONTINUOUS",
+        "_COLOR",
+        "256",
+        ";End of script",
+    ])
+    
+    script_content = "\n".join(script_lines)
+    
+    # Create ZIP archive with the script
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr('Environmental_Analysis.scr', script_content)
+    
+    zip_buffer.seek(0)
+    
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=Site_Analysis_Vectors.zip"}
+    )
+
+
+@app.post("/api/v1/environmental/generate-diagram-script")
+def generate_environmental_diagram(request: EnvironmentalVectorRequest):
+    """
+    Enhanced environmental diagram generator with all four vectors:
+    - North Arrow (rotated)
+    - Amihan (NE wind - Cyan, dynamic)
+    - Habagat (SW monsoon - Green, dynamic)
+    - Morning Sun (East - Yellow, locked absolute)
+    - Afternoon Sun (West - Orange/Red, locked absolute)
+    """
+    north_angle = request.north_angle
+
+    amihan_angle = 45
+    habagat_angle = 225
+    morning_sun_angle = 90
+    afternoon_sun_angle = 270
+
+    amihan_rotated = (amihan_angle + north_angle) % 360
+    habagat_rotated = (habagat_angle + north_angle) % 360
+
+    amihan_rad = math.radians(amihan_rotated)
+    habagat_rad = math.radians(habagat_rotated)
+    morning_sun_rad = math.radians(morning_sun_angle)
+    afternoon_sun_rad = math.radians(afternoon_sun_angle)
+
+    amihan_x = 1.2 * math.cos(amihan_rad)
+    amihan_y = 1.2 * math.sin(amihan_rad)
+    habagat_x = 1.2 * math.cos(habagat_rad)
+    habagat_y = 1.2 * math.sin(habagat_rad)
+    morning_sun_x = 1.0 * math.cos(morning_sun_rad)
+    morning_sun_y = 1.0 * math.sin(morning_sun_rad)
+    afternoon_sun_x = 1.0 * math.cos(afternoon_sun_rad)
+    afternoon_sun_y = 1.0 * math.sin(afternoon_sun_rad)
+
+    script_lines = [
+        '"Environmental Diagram - Full Analysis"',
+        ";Generated by ArchiVault - Complete Passive Design Strategy",
+        ";North angle: " + str(north_angle) + " degrees",
+        "",
+        ";SET DRAWING UNITS",
+        "_UNITS",
+        "4",
+        "",
+        ";NORTH ARROW POLYGON",
+        "_POLYGON",
+        "3",
+        "0,0",
+        "0.35,0.15",
+        "-0.35,0.15",
+        "",
+        ";ROTATE NORTH ARROW TO SITE ORIENTATION",
+        "_ROTATE",
+        "_PREVIOUS",
+        "0,0",
+        str(north_angle),
+        "",
+        ";NORTH LABEL",
+        "_TEXT",
+        "0,0.65",
+        "0.25",
+        str(north_angle),
+        "N",
+        "",
+        ";========== WIND VECTORS ==========",
+        ";AMIHAN VECTOR (NE WIND - CYAN DASHED)",
+        "_COLOR",
+        "5",
+        "_LINETYPE",
+        "_DASHED",
+        "_LINE",
+        "0,0",
+        str(round(amihan_x, 3)) + "," + str(round(amihan_y, 3)),
+        "",
+        ";AMIHAN LABEL",
+        "_TEXT",
+        str(round(amihan_x * 0.6, 3)) + "," + str(round(amihan_y * 0.6, 3)),
+        "0.2",
+        "0",
+        "AMIHAN (Cool NE Wind)",
+        "",
+        ";HABAGAT VECTOR (SW MONSOON - GREEN DASHED)",
+        "_COLOR",
+        "3",
+        "_LINE",
+        "0,0",
+        str(round(habagat_x, 3)) + "," + str(round(habagat_y, 3)),
+        "",
+        ";HABAGAT LABEL",
+        "_TEXT",
+        str(round(habagat_x * 0.6, 3)) + "," + str(round(habagat_y * 0.6, 3)),
+        "0.2",
+        "0",
+        "HABAGAT (Monsoon SW)",
+        "",
+        ";========== SOLAR VECTORS (ABSOLUTE LOCK) ==========",
+        ";MORNING SUN VECTOR (EAST - YELLOW)",
+        "_COLOR",
+        "2",
+        "_LINETYPE",
+        "_CONTINUOUS",
+        "_LINE",
+        "0,0",
+        str(round(morning_sun_x, 3)) + "," + str(round(morning_sun_y, 3)),
+        "",
+        ";MORNING SUN LABEL",
+        "_TEXT",
+        str(round(morning_sun_x * 0.55, 3)) + "," + str(round(morning_sun_y * 0.55, 3)),
+        "0.2",
+        "0",
+        "MORNING SUN (Warm Light)",
+        "",
+        ";AFTERNOON SUN VECTOR (WEST - ORANGE/RED DASHED)",
+        "_COLOR",
+        "30",
+        ";Orange = color index 30 (close approximation)",
+        "_LINETYPE",
+        "_DASHED",
+        "_LINE",
+        "0,0",
+        str(round(afternoon_sun_x, 3)) + "," + str(round(afternoon_sun_y, 3)),
+        "",
+        ";AFTERNOON SUN LABEL",
+        "_TEXT",
+        str(round(afternoon_sun_x * 0.55, 3)) + "," + str(round(afternoon_sun_y * 0.55, 3)),
+        "0.2",
+        "0",
+        "AFTERNOON (Harsh Heat)",
+        "",
+        ";RESET",
+        "_LINETYPE",
+        "_CONTINUOUS",
+        "_COLOR",
+        "256",
+    ]
+
+    script_content = "\n".join(script_lines)
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr('Environmental_Full_Diagram.scr', script_content)
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        iter([zip_buffer.getvalue()]),
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=Environmental_Full_Diagram.zip"}
+    )

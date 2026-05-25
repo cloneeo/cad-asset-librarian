@@ -6,22 +6,28 @@ import {
   Download,
   ExternalLink,
   FileCode2,
+  Info,
   ImagePlus,
+  Grid2X2,
   LayoutGrid,
   Loader2,
   Plus,
   Ruler,
   Search,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UploadCloud,
   XCircle,
 } from 'lucide-react';
 import { ActiveTab } from '../types';
+import ComplianceLab from './ComplianceLab';
 import CompanionSuite from './CompanionSuite';
+import FloorPlanLab from './FloorPlanLab';
 import OptimizationPanel from './OptimizationPanel';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
+const SUPPORTED_CAD_EXTENSIONS = ['.dwg', '.dxf', '.obj'];
 
 type DashboardProps = {
   activeTab: ActiveTab;
@@ -78,9 +84,17 @@ type CommandRow = {
   enabled: boolean;
 };
 
+type SelectedCadAsset = {
+  name: string;
+  extension: string;
+  sizeMb: number;
+};
+
 const tabs: Array<{ id: ActiveTab; label: string; icon: React.ElementType }> = [
   { id: 'vault', label: 'Asset Vault', icon: Search },
+  { id: 'floorplan', label: 'Floor Plan Lab', icon: Grid2X2 },
   { id: 'lab', label: 'Scale & Layout Lab', icon: Ruler },
+  { id: 'compliance', label: 'Compliance & Environmental Lab', icon: ShieldCheck },
   { id: 'automation', label: 'Automation Panel', icon: FileCode2 },
   { id: 'studio', label: '3D & BIM Studio', icon: Building2 },
 ];
@@ -138,6 +152,15 @@ function buttonClass(variant: 'primary' | 'secondary' = 'primary') {
   return 'inline-flex items-center justify-center gap-2 rounded-md bg-cyan-400 px-3 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-cyan-300';
 }
 
+function getFileExtension(fileName: string) {
+  const dotIndex = fileName.lastIndexOf('.');
+  return dotIndex >= 0 ? fileName.slice(dotIndex).toLowerCase() : '';
+}
+
+function isSupportedCadAsset(file: File) {
+  return SUPPORTED_CAD_EXTENSIONS.includes(getFileExtension(file.name));
+}
+
 function ResourceLinks() {
   return (
     <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
@@ -158,6 +181,67 @@ function ResourceLinks() {
             <span className="mt-2 block text-xs leading-5 text-zinc-400">{resource.description}</span>
           </a>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function ScaleFitPreview({ scaleResult }: { scaleResult: ScaleResponse }) {
+  const boundary = scaleResult.printable_boundary_mm;
+  const drawing = scaleResult.drawing_dimensions_mm;
+  const drawingWidthPercent = Math.min((drawing.width / boundary.width) * 100, 112);
+  const drawingHeightPercent = Math.min((drawing.length / boundary.height) * 100, 112);
+  const offsetX = Math.max((100 - Math.min(drawingWidthPercent, 100)) / 2, 0);
+  const offsetY = Math.max((100 - Math.min(drawingHeightPercent, 100)) / 2, 0);
+
+  return (
+    <div className="mt-4 grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
+      <div className="rounded-md border border-white/10 bg-[#080a0d] p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-medium text-white">{scaleResult.sheet_size} printable preview</p>
+            <p className="mt-1 text-xs text-zinc-500">{boundary.width} x {boundary.height} mm · {scaleResult.orientation}</p>
+          </div>
+          <span className={`rounded-md border px-2 py-1 text-xs ${scaleResult.valid ? 'border-emerald-300/30 bg-emerald-300/10 text-emerald-200' : 'border-red-300/30 bg-red-300/10 text-red-200'}`}>
+            {scaleResult.valid ? 'Safe' : 'Overflow'}
+          </span>
+        </div>
+        <div className="mx-auto aspect-[0.707/1] max-h-[340px] w-full max-w-[260px] rounded-md border border-zinc-600 bg-zinc-950 p-3">
+          <div className="relative h-full w-full overflow-hidden rounded-sm border border-cyan-300/40 bg-[linear-gradient(90deg,rgba(34,211,238,0.08)_1px,transparent_1px),linear-gradient(rgba(34,211,238,0.08)_1px,transparent_1px)] bg-[size:25%_25%]">
+            <div className="absolute inset-0 border border-emerald-300/40 bg-emerald-300/5" />
+            <div
+              className={`absolute rounded-sm border p-1 ${scaleResult.valid ? 'border-cyan-200 bg-cyan-300/25' : 'border-red-200 bg-red-300/25'}`}
+              style={{
+                left: `${offsetX}%`,
+                top: `${offsetY}%`,
+                width: `${Math.max(drawingWidthPercent, 4)}%`,
+                height: `${Math.max(drawingHeightPercent, 4)}%`,
+              }}
+            >
+              <span className="block truncate text-[9px] font-semibold text-white">Scaled drawing</span>
+              <span className="block truncate text-[8px] text-zinc-100">{scaleResult.scale}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid content-start gap-3 sm:grid-cols-2">
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Drawing size</p>
+          <p className="mt-1 text-sm font-semibold text-white">{drawing.width} x {drawing.length} mm</p>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Printable boundary</p>
+          <p className="mt-1 text-sm font-semibold text-white">{boundary.width} x {boundary.height} mm</p>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Horizontal room</p>
+          <p className="mt-1 text-sm font-semibold text-white">{scaleResult.remaining_margin_safety_mm.horizontal_total} mm</p>
+        </div>
+        <div className="rounded-md border border-white/10 bg-black/20 p-3">
+          <p className="text-[11px] uppercase tracking-[0.14em] text-zinc-500">Vertical room</p>
+          <p className="mt-1 text-sm font-semibold text-white">{scaleResult.remaining_margin_safety_mm.vertical_total} mm</p>
+        </div>
       </div>
     </div>
   );
@@ -201,6 +285,7 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
   const [uploadedHash, setUploadedHash] = useState('');
   const [matches, setMatches] = useState<SearchMatch[]>([]);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [selectedCadAsset, setSelectedCadAsset] = useState<SelectedCadAsset | null>(null);
 
   const [scaleForm, setScaleForm] = useState({
     real_world_width_meters: 18,
@@ -218,33 +303,35 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
   const [newCommand, setNewCommand] = useState('');
   const [studentLayers, setStudentLayers] = useState('walls, door swings, furniture loose, dims');
   const [scriptPreview, setScriptPreview] = useState('');
+  const [injectRules, setInjectRules] = useState<{ deepPurge: boolean; purgeRegapps: boolean; overkill: boolean } | null>(null);
   const enabledCommands = useMemo(() => commands.filter((command) => command.enabled), [commands]);
 
-  async function runVisualSearch(file: File) {
-    if (!file.type.startsWith('image/')) {
-      setSearchError('Upload a PNG, JPG, or another image screenshot.');
+  function handleInjectOptimizationRules(rules: { deepPurge: boolean; purgeRegapps: boolean; overkill: boolean }) {
+    setInjectRules(rules);
+    setActiveTab('automation');
+  }
+
+  function handleCadAssetFile(file: File) {
+    if (!isSupportedCadAsset(file)) {
+      setSearchError('Unsupported file format. Please upload a vector CAD drawing or 3D mesh block.');
+      setSelectedCadAsset(null);
+      setPreviewUrl('');
+      setUploadedHash('');
+      setMatches([]);
       return;
     }
 
     setSearching(true);
     setSearchError('');
     setMatches([]);
-    setUploadedHash('');
-    setPreviewUrl(URL.createObjectURL(file));
-
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-      const response = await fetch(`${API_BASE}/search`, { method: 'POST', body: formData });
-      if (!response.ok) throw new Error(await response.text());
-      const data = await response.json();
-      setUploadedHash(data.uploaded_phash);
-      setMatches(data.matches ?? []);
-    } catch (error) {
-      setSearchError(error instanceof Error ? error.message : 'Visual search failed.');
-    } finally {
-      setSearching(false);
-    }
+    setPreviewUrl('');
+    setUploadedHash(`Accepted CAD asset: ${file.name}`);
+    setSelectedCadAsset({
+      name: file.name,
+      extension: getFileExtension(file.name).replace('.', '').toUpperCase(),
+      sizeMb: Number((file.size / (1024 * 1024)).toFixed(2)),
+    });
+    setSearching(false);
   }
 
   async function computeScale() {
@@ -310,6 +397,19 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
     setNewCommand('');
   }
 
+  function appendCatalogCommand(payload: { label: string; command: string }) {
+    setCommands((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        label: payload.label,
+        command: payload.command,
+        enabled: true,
+      },
+    ]);
+    setActiveTab('automation');
+  }
+
   return (
     <div className="space-y-6">
       <nav className="flex flex-wrap gap-2 border-b border-white/10 pb-4">
@@ -349,17 +449,18 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
                 event.preventDefault();
                 setIsDragging(false);
                 const file = event.dataTransfer.files[0];
-                if (file) runVisualSearch(file);
+                if (file) handleCadAssetFile(file);
               }}
             >
               <input
                 ref={fileInputRef}
                 type="file"
-                accept="image/*"
+                accept=".dwg,.dxf,.obj"
                 className="hidden"
                 onChange={(event) => {
                   const file = event.target.files?.[0];
-                  if (file) runVisualSearch(file);
+                  if (file) handleCadAssetFile(file);
+                  event.currentTarget.value = '';
                 }}
               />
               <div className="flex min-h-[360px] flex-col items-center justify-center rounded-md border border-white/10 bg-[#11151b] p-6 text-center">
@@ -368,28 +469,44 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
                 ) : (
                   <ImagePlus className="mb-5 h-12 w-12 text-cyan-300" />
                 )}
-                <h3 className="text-lg font-semibold text-white">Drop a plan screenshot</h3>
-                <p className="mt-2 max-w-sm text-sm leading-6 text-zinc-400">The API computes a 64-bit pHash and compares it against local `.dwg` and `.obj` records in SQLite.</p>
+                <h3 className="text-lg font-semibold text-white">Drop a CAD asset file</h3>
+                <p className="mt-2 max-w-sm text-sm leading-6 text-zinc-400">Use vector drawing files and 3D mesh blocks for vault analysis and optimization planning.</p>
+                <div className="mt-4 flex max-w-md items-start gap-2 rounded-md border border-amber-300/20 bg-amber-300/10 px-3 py-2 text-left text-xs leading-5 text-amber-100">
+                  <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-200" />
+                  <span>Accepts .dwg, .dxf, and .obj CAD assets. Max recommended size for analysis: 50MB.</span>
+                </div>
                 <button className={`${buttonClass()} mt-5`} onClick={() => fileInputRef.current?.click()}>
                   <UploadCloud className="h-4 w-4" />
-                  Upload Screenshot
+                  Upload CAD Asset
                 </button>
                 {searching && <p className="mt-4 inline-flex items-center gap-2 text-sm text-cyan-200"><Loader2 className="h-4 w-4 animate-spin" /> Searching local vault</p>}
-                {searchError && <p className="mt-4 rounded-md border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-200">{searchError}</p>}
+                {searchError && <p className="mt-4 rounded-md border border-amber-300/30 bg-amber-300/10 px-3 py-2 text-xs text-amber-100">{searchError}</p>}
               </div>
             </div>
 
             <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-semibold text-white">Match Results</h3>
-                  <p className="mt-1 text-xs text-zinc-500">{uploadedHash ? `Uploaded pHash: ${uploadedHash}` : 'Awaiting screenshot input'}</p>
+                  <h3 className="text-base font-semibold text-white">CAD Asset Intake</h3>
+                  <p className="mt-1 text-xs text-zinc-500">{uploadedHash || 'Awaiting .dwg, .dxf, or .obj input'}</p>
                 </div>
                 <BoxSelect className="h-5 w-5 text-cyan-300" />
               </div>
               <div className="space-y-3">
-                {matches.length === 0 && (
-                  <div className="rounded-md border border-white/10 bg-[#11151b] p-5 text-sm text-zinc-400">No matches yet. Seeded backend assets will appear here after a search.</div>
+                {selectedCadAsset && (
+                  <div className="rounded-md border border-emerald-300/20 bg-emerald-300/10 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h4 className="font-medium text-emerald-100">{selectedCadAsset.name}</h4>
+                        <p className="mt-1 text-xs text-emerald-200">{selectedCadAsset.extension} asset · {selectedCadAsset.sizeMb} MB</p>
+                      </div>
+                      <CheckCircle2 className="h-5 w-5 text-emerald-300" />
+                    </div>
+                    <p className="mt-3 text-sm leading-5 text-emerald-100/80">File type accepted. You can continue with asset analysis or workflow optimization tools.</p>
+                  </div>
+                )}
+                {!selectedCadAsset && matches.length === 0 && (
+                  <div className="rounded-md border border-white/10 bg-[#11151b] p-5 text-sm text-zinc-400">No CAD asset selected yet. Drop or upload a supported `.dwg`, `.dxf`, or `.obj` file.</div>
                 )}
                 {matches.map((match) => (
                   <div key={match.id} className="rounded-md border border-white/10 bg-[#11151b] p-4">
@@ -413,6 +530,8 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
           <ResourceLinks />
         </div>
       )}
+
+      {activeTab === 'floorplan' && <FloorPlanLab />}
 
       {activeTab === 'lab' && (
         <div className="space-y-5">
@@ -448,6 +567,7 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
                   {scaleResult.valid ? <CheckCircle2 className="h-5 w-5 text-emerald-300" /> : <XCircle className="h-5 w-5 text-red-300" />}
                   <p className="font-medium text-white">{scaleResult.valid ? 'Fits printable boundary' : 'Scale overflows selected sheet'}</p>
                 </div>
+                <ScaleFitPreview scaleResult={scaleResult} />
                 <div className="mt-4 grid gap-3 text-sm text-zinc-400 sm:grid-cols-2">
                   <p>Drawing: {scaleResult.drawing_dimensions_mm.width} x {scaleResult.drawing_dimensions_mm.length} mm</p>
                   <p>Boundary: {scaleResult.printable_boundary_mm.width} x {scaleResult.printable_boundary_mm.height} mm</p>
@@ -505,73 +625,23 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
             </div>
             </div>
           </section>
-          <CompanionSuite />
+          <CompanionSuite onSelectCommand={appendCatalogCommand} onInjectOptimizationRules={handleInjectOptimizationRules} />
         </div>
       )}
 
-      {activeTab === 'automation' && (
-        <div className="space-y-5">
-          <section className="grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
-              <h3 className="text-base font-semibold text-white">Dynamic Command Table</h3>
-              <p className="mt-1 text-sm text-zinc-400">Enabled rows are injected after audit, deep purge, and layer realignment.</p>
-              <Field label="Student layers to normalize">
-                <input className={`${inputClass()} mt-5`} value={studentLayers} onChange={(event) => setStudentLayers(event.target.value)} />
-              </Field>
-              <div className="mt-5 space-y-2">
-                {commands.map((command) => (
-                  <div key={command.id} className="flex items-start gap-3 rounded-md border border-white/10 bg-[#11151b] p-3">
-                    <input
-                      type="checkbox"
-                      checked={command.enabled}
-                      onChange={() => setCommands((current) => current.map((item) => item.id === command.id ? { ...item, enabled: !item.enabled } : item))}
-                      className="mt-1 h-4 w-4 accent-cyan-300"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-white">{command.label}</p>
-                      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-[11px] leading-5 text-zinc-500">{command.command}</pre>
-                    </div>
-                    <button className="rounded p-1 text-zinc-500 hover:bg-red-400/10 hover:text-red-300" onClick={() => setCommands((current) => current.filter((item) => item.id !== command.id))}>
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-              <form onSubmit={addCommand} className="mt-5 rounded-md border border-white/10 bg-[#11151b] p-4">
-                <div className="grid gap-3">
-                  <Field label="Command label">
-                    <input className={inputClass()} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} />
-                  </Field>
-                  <Field label="Raw AutoCAD commands">
-                    <textarea className={inputClass()} rows={4} value={newCommand} onChange={(event) => setNewCommand(event.target.value)} />
-                  </Field>
-                </div>
-                <button className={`${buttonClass('secondary')} mt-4`} type="submit">
-                  <Plus className="h-4 w-4" />
-                  Add Row
-                </button>
-              </form>
-            </div>
+      {activeTab === 'compliance' && <ComplianceLab />}
 
-            <div className="rounded-lg border border-white/10 bg-[#080a0d]">
-              <div className="flex flex-col gap-3 border-b border-white/10 p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h3 className="text-base font-semibold text-white">Optimize_Project.scr</h3>
-                  <p className="mt-1 text-xs text-zinc-500">{enabledCommands.length} custom command rows enabled</p>
-                </div>
-                <div className="flex gap-2">
-                  <button className={buttonClass('secondary')} onClick={() => generateWorkflowScript(false)}>Preview</button>
-                  <button className={buttonClass()} onClick={() => generateWorkflowScript(true)}>
-                    <Download className="h-4 w-4" />
-                    Download
-                  </button>
-                </div>
-              </div>
-              <pre className="min-h-[520px] overflow-auto p-5 font-mono text-xs leading-6 text-emerald-300">{scriptPreview || '; Generate a preview to inspect the final AutoCAD workflow script.'}</pre>
-            </div>
-          </section>
-          <OptimizationPanel />
-        </div>
+      {activeTab === 'automation' && (
+        <OptimizationPanel
+          commands={commands}
+          setCommands={setCommands}
+          newLabel={newLabel}
+          setNewLabel={setNewLabel}
+          newCommand={newCommand}
+          setNewCommand={setNewCommand}
+          onInjectRules={injectRules}
+          activeTab={activeTab}
+        />
       )}
 
       {activeTab === 'studio' && <StudioPlaceholder />}
