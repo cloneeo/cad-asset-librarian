@@ -1,0 +1,6 @@
+{
+  "name": "CAD-Asset Librarian",
+  "description": "An interactive CAD block asset library featuring real visual search using Perceptual Hashing (pHash), custom AutoCAD script generation, and a Python FastAPI backend architecture reference.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
