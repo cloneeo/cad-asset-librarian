@@ -14,7 +14,18 @@ from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import database session and schema models
-from .database import SessionLocal, engine, Base, Asset, Category, seed_db_defaults
+from .database import (
+    SessionLocal,
+    engine,
+    Base,
+    Asset,
+    AutoCADFileHealthCheck,
+    BuildingCodeCheck,
+    Category,
+    TileGridEstimate,
+    WorkflowLog,
+    seed_db_defaults,
+)
 
 Base.metadata.create_all(bind=engine)
 
@@ -420,6 +431,135 @@ class RenderScriptRequest(BaseModel):
     freeze_layers: List[str] = []
 
 
+class WorkflowLogRequest(BaseModel):
+    action_type: str
+    file_path: Optional[str] = None
+    result_summary: str
+    warnings_count: int = 0
+
+
+class ComplianceSummaryRequest(BaseModel):
+    lot_area_sqm: float = 0
+    lot_type: str = "Inside"
+    zoning: str = "R1"
+    result_summary: str
+    warnings_count: int = 0
+    tile_summary: str = ""
+    material_summary: str = ""
+
+
+class AutoCADFileHealthCheckRequest(BaseModel):
+    file_name: str
+    file_path: Optional[str] = None
+    file_type: str
+    file_size_mb: float = 0
+    layer_count: int = 0
+    block_count: int = 0
+    hatch_count: int = 0
+    xref_count: int = 0
+    raster_detected: bool = False
+    annotation_detected: bool = False
+    objects3d_detected: bool = False
+    entity_count: int = 0
+    health_score: int = 0
+    health_status: str = "Unknown"
+    recommendations: str = ""
+
+
+@app.post("/api/v1/workflow/log")
+def create_workflow_log(payload: WorkflowLogRequest, db: Session = Depends(get_db)):
+    log = WorkflowLog(
+        action_type=payload.action_type,
+        file_path=payload.file_path,
+        result_summary=payload.result_summary,
+        warnings_count=payload.warnings_count,
+    )
+    db.add(log)
+    db.commit()
+    db.refresh(log)
+    return {
+        "id": log.id,
+        "action_type": log.action_type,
+        "file_path": log.file_path,
+        "result_summary": log.result_summary,
+        "warnings_count": log.warnings_count,
+        "created_at": log.created_at.isoformat(),
+    }
+
+
+@app.post("/api/v1/autocad/health-checks")
+def save_autocad_health_check(payload: AutoCADFileHealthCheckRequest, db: Session = Depends(get_db)):
+    health_check = AutoCADFileHealthCheck(
+        file_name=payload.file_name,
+        file_path=payload.file_path,
+        file_type=payload.file_type,
+        file_size_mb=payload.file_size_mb,
+        layer_count=payload.layer_count,
+        block_count=payload.block_count,
+        hatch_count=payload.hatch_count,
+        xref_count=payload.xref_count,
+        raster_detected=1 if payload.raster_detected else 0,
+        annotation_detected=1 if payload.annotation_detected else 0,
+        objects3d_detected=1 if payload.objects3d_detected else 0,
+        entity_count=payload.entity_count,
+        health_score=payload.health_score,
+        health_status=payload.health_status,
+        recommendations=payload.recommendations,
+    )
+    log = WorkflowLog(
+        action_type="autocad_file_health_check",
+        file_path=payload.file_path,
+        result_summary=f"{payload.file_name}: {payload.health_score}/100 - {payload.health_status}",
+        warnings_count=len([line for line in payload.recommendations.splitlines() if line.strip()]),
+    )
+    db.add(health_check)
+    db.add(log)
+    db.commit()
+    db.refresh(health_check)
+    return {
+        "id": health_check.id,
+        "health_score": health_check.health_score,
+        "health_status": health_check.health_status,
+        "created_at": health_check.created_at.isoformat(),
+    }
+
+
+@app.post("/api/v1/compliance/save-summary")
+def save_compliance_summary(payload: ComplianceSummaryRequest, db: Session = Depends(get_db)):
+    code_check = BuildingCodeCheck(
+        lot_area_sqm=payload.lot_area_sqm,
+        lot_type=payload.lot_type,
+        zoning=payload.zoning,
+        result_summary=payload.result_summary,
+        warnings_count=payload.warnings_count,
+    )
+    tile_estimate = TileGridEstimate(
+        room_shape=payload.tile_summary.split(",")[0].strip() if payload.tile_summary else "Rectangle",
+        tile_pattern=payload.tile_summary.split(",")[1].strip() if "," in payload.tile_summary else "Straight grid",
+        tile_summary=payload.tile_summary,
+        material_summary=payload.material_summary,
+        warnings_count=payload.warnings_count,
+    )
+    log = WorkflowLog(
+        action_type="compliance_tile_summary",
+        file_path="browser-session",
+        result_summary=payload.result_summary,
+        warnings_count=payload.warnings_count,
+    )
+    db.add(code_check)
+    db.add(tile_estimate)
+    db.add(log)
+    db.commit()
+    db.refresh(code_check)
+    db.refresh(tile_estimate)
+    return {
+        "building_code_check_id": code_check.id,
+        "tile_grid_estimate_id": tile_estimate.id,
+        "result_summary": payload.result_summary,
+        "warnings_count": payload.warnings_count,
+    }
+
+
 class ScaleRequest(BaseModel):
     real_world_width_meters: float = Field(gt=0)
     real_world_length_meters: float = Field(gt=0)
@@ -450,8 +590,16 @@ class AutoCADScriptRequest(BaseModel):
     flatten_2d_linework: bool = False
     consolidate_geometry: bool = False
     bind_xrefs: bool = False
-    auto_save_close: bool = True
+    purge_regapps: bool = True
+    inject_pdf_plot_macro: bool = False
+    auto_save_close: bool = False
     custom_commands: List[str] = []
+
+
+class WorkspaceCreateProjectRequest(BaseModel):
+    base_directory_path: str
+    project_name: str
+    active_drawing_filename: str
 
 
 class LayoutBudgetDrawing(BaseModel):
@@ -502,7 +650,22 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
         "; ================================================",
         "; ArchiVault Web Suite - Custom AutoCAD Cleanup",
         "; Generated from the interactive optimization checklist",
+        "; Sanity Check: This script is for cleanup and optimization. It does not modify geometry. If you encounter errors, press Ctrl+Z to revert.",
         "; ================================================",
+        "",
+        "_UNDO",
+        "_GROUP",
+        "",
+        "; [Safety Warning Comments]",
+        "; Non-destructive protocol: no DELETE or ERASE commands are emitted.",
+        "; Soft purge uses confirm/verify = _N so used definitions are not accidentally removed.",
+        "; Geometry-changing tools such as FLATTEN, OVERKILL, JOIN, and XREF BIND are intentionally skipped in safe mode.",
+        "",
+        "; [Set System Variables for performance]",
+        "_FILEDIA",
+        "0",
+        "_CMDECHO",
+        "0",
         "",
     ]
 
@@ -516,52 +679,75 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
 
     if request.deep_purge:
         lines.extend([
-            "; [2] Deep Purge Junk Items",
+            "; [2] Soft Purge Junk Items",
             "_-PURGE",
             "_A",
-            "_*",
+            "*",
+            "_N",
+            "",
+        ])
+
+    if request.purge_regapps:
+        lines.extend([
+            "; [3] Soft Purge Regapps - Deep Registry Clean",
+            "_-PURGE",
+            "_R",
+            "*",
             "_N",
             "",
         ])
 
     if request.flatten_2d_linework:
         lines.extend([
-            "; [4] Geometry Flattening Process",
-            "_FLATTEN",
-            "_ALL",
-            "",
-            "_N",
+            "; [4] Geometry Flattening Process skipped by non-destructive safety mode",
+            "; _FLATTEN is geometry-modifying and must be run manually after backup review.",
             "",
         ])
 
     if request.overkill or request.consolidate_geometry:
         lines.extend([
-            "; [5] Consolidate Geometry / Overkill",
-            "_OVERKILL",
-            "_ALL",
-            "",
+            "; [5] Duplicate Geometry cleanup skipped by non-destructive safety mode",
+            "; _OVERKILL can remove entities and is not emitted in safe scripts.",
             "",
         ])
 
     if request.bind_xrefs:
         lines.extend([
-            "; [6] External Reference Binding",
-            "_-XREF",
-            "_BIND",
-            "*",
+            "; [6] External Reference Binding skipped by non-destructive safety mode",
+            "; XREF BIND changes drawing references and is not emitted in safe scripts.",
+            "",
+        ])
+
+    if request.inject_pdf_plot_macro:
+        lines.extend([
+            "; [8] Quick PDF Plot Macro",
+            "_-PLOT",
+            "_Y",
+            "",
+            "DWG To PDF.pc3",
+            "ISO full bleed A1 (841.00 x 594.00 MM)",
+            "_M",
+            "_L",
+            "_N",
+            "_W",
+            "0,0",
+            "841,594",
+            "_F",
+            "_C",
+            "_Y",
+            "monochrome.ctb",
+            "_Y",
+            "_A",
+            str(get_desktop_path() / "ArchiVault_Quick_Plot.pdf"),
+            "_N",
+            "_Y",
             "",
         ])
 
     if request.close_tiny_gaps:
         lines.extend([
-            "; [7] Close Tiny Geometric Gaps",
-            "_PEDIT",
-            "_M",
-            "_ALL",
-            "",
-            "_Y",
-            "_J",
-            "0.01",
+            "; [7] Close Tiny Geometric Gaps skipped by non-destructive safety mode",
+            "; PEDIT/JOIN changes geometry and is not emitted in safe scripts.",
             "",
         ])
 
@@ -570,6 +756,9 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
         for line in command.splitlines():
             cleaned_line = line.strip()
             if cleaned_line:
+                if cleaned_line.upper().lstrip("_-").split()[0] in {"ERASE", "DELETE"}:
+                    cleaned_custom_commands.append(f"; skipped unsafe custom command: {cleaned_line}")
+                    continue
                 cleaned_custom_commands.append(cleaned_line)
     if cleaned_custom_commands:
         lines.extend([
@@ -578,13 +767,28 @@ def build_custom_autocad_script(request: AutoCADScriptRequest) -> str:
             "",
         ])
 
+    lines.extend([
+        "; [Restore System Variables]",
+        "_FILEDIA",
+        "1",
+        "_CMDECHO",
+        "1",
+        "",
+    ])
+
     if request.auto_save_close:
         lines.extend([
-            "; Save and close workspace",
+            "; Optional Auto-save drawing",
             "_QSAVE",
-            "_CLOSE",
             "",
         ])
+
+    lines.extend([
+        "; [End Undo Group]",
+        "_UNDO",
+        "_END",
+        "",
+    ])
 
     if lines[-1] != "":
         lines.append("")
@@ -789,6 +993,35 @@ def save_custom_autocad_script(request: AutoCADScriptRequest):
         "file_name": script_path.name,
         "file_type": "AutoCAD Script (.scr)",
         "message": "Script compiled directly to Desktop without using a browser download.",
+    }
+
+
+@app.post("/api/v1/workspace/create-project")
+def create_workspace_project(request: WorkspaceCreateProjectRequest):
+    base_root = Path(request.base_directory_path).expanduser().resolve()
+    if not base_root.exists() or not base_root.is_dir():
+        raise HTTPException(status_code=404, detail="Base directory path does not exist.")
+
+    drawing_path = (base_root / request.active_drawing_filename).resolve()
+    if base_root not in drawing_path.parents and drawing_path != base_root:
+        raise HTTPException(status_code=400, detail="Drawing target must stay inside the registered base directory.")
+    if not drawing_path.exists() or not drawing_path.is_file():
+        raise HTTPException(status_code=404, detail="Active drawing file was not found inside the base directory.")
+
+    safe_project_name = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in request.project_name.strip()) or "ArchiVault_Project"
+    backup_dir = base_root / safe_project_name / "01_CAD_Drafts" / "Backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+    backup_name = f"{drawing_path.stem}_SAFETY_BACKUP_{timestamp}{drawing_path.suffix}"
+    backup_path = backup_dir / backup_name
+    shutil.copy2(drawing_path, backup_path)
+
+    return {
+        "status": "success",
+        "project_name": safe_project_name,
+        "source_file": str(drawing_path),
+        "backup_file": str(backup_path),
+        "backup_folder": str(backup_dir),
     }
 
 

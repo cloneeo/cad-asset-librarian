@@ -28,7 +28,22 @@ export interface CustomCommand {
   enabled: boolean;
 }
 
-export type ActiveTab = 'vault' | 'lab' | 'automation' | 'studio';
+export type ActiveTab =
+  | 'dashboard'
+  | 'vault'
+  | 'planning'
+  | 'site'
+  | 'compliance'
+  | 'materials'
+  | 'plots'
+  | 'automation'
+  | 'render'
+  | 'reports'
+  | 'settings'
+  // Legacy workspace ids are kept so older saved workspace JSON files still restore safely.
+  | 'floorplan'
+  | 'lab'
+  | 'studio';
 
 export interface ExternalDWGProvider {
   name: string;

@@ -22,19 +22,27 @@ Minimal full-stack framework for architecture students working with CAD assets, 
 ## Run Locally
 
 > [!IMPORTANT]
-> ### ArchiVault Workspace Launch
-> Open this README in VS Code Markdown Preview, then use the launcher below to start the full local stack in two separated terminals.
+> ### One-Click Local Launch After Restart
+> Open this README in **VS Code Markdown Preview**, then click the launcher below. It starts the full local stack in two separated terminals.
 >
-> [🚀 Click here to Launch Full Workspace (Frontend + Backend)](./run_archivault.bat)
+> [Launch Full ArchiVault Workspace - Frontend + Backend](./run_archivault.bat)
 >
 > The launcher starts:
 > - FastAPI at `http://localhost:8080` with `.venv` activated
 > - Vite at `http://localhost:3000` by calling `node node_modules\vite\bin\vite.js` directly
+>
+> After both terminals finish starting, open the local website:
+>
+> [Open ArchiVault Local App](http://localhost:3000)
+>
+> If this is the first run after downloading/restarting and `node_modules` is missing, the launcher will run `npm install` first. When that install window finishes, close it and click the launcher again.
 
 First-time dependency setup:
 
 ```bash
-npm install
+$env:ComSpec='C:\Windows\System32\cmd.exe'
+$env:npm_config_script_shell='C:\Windows\System32\cmd.exe'
+& "C:\Program Files\nodejs\node.exe" "C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js" install
 pip install -r python_backend/requirements.txt
 ```
 
@@ -43,5 +51,9 @@ Manual fallback:
 ```powershell
 .\run_archivault.bat
 ```
+
+Windows PowerShell note: if `npm install` says scripts are disabled or opens a Jupyter error, use the full Node command above. It forces npm scripts to run through Windows `cmd.exe`, bypassing the blocked `npm.ps1` wrapper and the broken Jupyter shell setting.
+
+After restarting your laptop, repeat the same flow: open this README preview, click the launcher, then open `http://localhost:3000`.
 
 The frontend expects the API at `http://localhost:8080`. Override it with `VITE_API_BASE_URL` if needed.

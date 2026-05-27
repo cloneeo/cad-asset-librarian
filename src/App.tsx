@@ -4,7 +4,7 @@ import Dashboard from './components/Dashboard';
 import { ActiveTab } from './types';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>('vault');
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
 
   return (
     <div className="min-h-screen bg-[#0b0d10] text-zinc-100 antialiased" id="app-root">
