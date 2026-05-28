@@ -45,6 +45,10 @@ type ProjectWorkspaceData = {
   projectName: string;
   projectType: string;
   siteAddress: string;
+  siteLatitude: number;
+  siteLongitude: number;
+  siteSearchName: string;
+  siteCityRegion: string;
   siteArea: number;
   sitePerimeter: number;
   siteSummary: string;
@@ -3311,7 +3315,7 @@ function ComplianceLab({
 type SiteBoundaryPoint = { x: number; y: number; lat: number; lng: number };
 type SiteMapProvider = 'osm' | 'google-roadmap' | 'google-satellite' | 'google-hybrid' | 'google-terrain';
 type SiteViewMode = '2D' | 'CONCEPT_3D' | 'REAL_3D';
-type SiteSearchResult = { id: string; name: string; address: string; type: string; lat: number; lng: number; distanceMeters?: number };
+type SiteSearchResult = { id: string; name: string; address: string; type: string; lat: number; lng: number; distanceMeters?: number; cityRegion?: string };
 type SiteMassingState = { width: number; length: number; height: number; floors: number; rotation: number; x: number; y: number; enabled: boolean };
 type LeafletSiteMapProps = {
   site: { address: string; latitude: number; longitude: number };
@@ -3740,6 +3744,7 @@ function SiteAnalysisTab() {
   const [showRecentSearches, setShowRecentSearches] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState('');
+  const [activeSearchIndex, setActiveSearchIndex] = useState(0);
   const [openMapData, setOpenMapData] = useState({ status: 'Not loaded', amenities: 0, schools: 0, hospitals: 0, parks: 0, transit: 0, roads: 0, buildings: 0 });
   const [helperDismissed, setHelperDismissed] = useState(false);
   const [mapFitRequest, setMapFitRequest] = useState(0);
@@ -3854,6 +3859,96 @@ function SiteAnalysisTab() {
       document.removeEventListener('keydown', handleEscape);
     };
   }, [boundary.length, isDrawingBoundary]);
+
+  async function fetchNominatimSuggestions(rawQuery: string, signal?: AbortSignal) {
+    const cleanedQuery = rawQuery.replace(/[^\w\s.,-]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (cleanedQuery.length < 2) return [];
+    const queryVariants = Array.from(new Set([
+      rawQuery.trim(),
+      `${rawQuery.trim()} Philippines`,
+      cleanedQuery,
+      `${cleanedQuery} Philippines`,
+      cleanedQuery.split(',').slice(-2).join(' ').trim(),
+    ].filter(Boolean)));
+    const allResults: any[] = [];
+    for (const query of queryVariants) {
+      const params = new URLSearchParams({
+        format: 'json',
+        addressdetails: '1',
+        limit: '8',
+        bounded: '0',
+        countrycodes: 'ph',
+        q: query,
+      });
+      const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, { signal });
+      if (!response.ok) throw new Error('Search service unavailable');
+      const results = await response.json();
+      if (Array.isArray(results)) allResults.push(...results);
+      if (Array.isArray(results) && results.length >= 5) break;
+    }
+    const seen = new Set<string>();
+    return allResults.map((result: any, index: number) => {
+      const address = result.address ?? {};
+      const name = result.name || address.school || address.university || address.amenity || address.building || address.mall || address.church || address.road || address.suburb || address.city || address.town || address.village || result.display_name?.split(',')[0] || 'Search result';
+      const cityRegion = [address.city || address.town || address.municipality || address.village || address.suburb, address.state || address.province || address.region].filter(Boolean).join(', ');
+      const lat = Number(result.lat);
+      const lng = Number(result.lon);
+      return {
+        id: `${result.place_id ?? `${lat}-${lng}-${index}`}`,
+        name,
+        address: result.display_name ?? 'OpenStreetMap result',
+        type: result.type || result.class || address.amenity || address.tourism || address.shop || 'place',
+        lat,
+        lng,
+        cityRegion,
+        distanceMeters: Number.isFinite(lat) && Number.isFinite(lng) ? distanceMetersBetween(mapCenter, { lat, lng }) : undefined,
+      } as SiteSearchResult;
+    }).filter((result) => {
+      const key = `${result.id}-${result.lat.toFixed(5)}-${result.lng.toFixed(5)}`;
+      if (!Number.isFinite(result.lat) || !Number.isFinite(result.lng) || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, 8);
+  }
+
+  useEffect(() => {
+    if (mapMode !== 'leaflet' || isDrawingBoundary) return;
+    const rawQuery = site.address.trim();
+    if (rawQuery.length < 2) {
+      setSearchResults([]);
+      setSearchError('');
+      setActiveSearchIndex(0);
+      return;
+    }
+    const controller = new AbortController();
+    const timeout = window.setTimeout(async () => {
+      try {
+        setSearchLoading(true);
+        setSearchError('');
+        const results = await fetchNominatimSuggestions(rawQuery, controller.signal);
+        if (controller.signal.aborted) return;
+        setSearchResults(results);
+        setActiveSearchIndex(0);
+        setShowRecentSearches(false);
+        setShowSearchDropdown(true);
+        setConnectionStatus('OpenStreetMap Ready');
+        if (!results.length && rawQuery.length >= 3) setSearchError('No places found. Try a shorter name or click on the map.');
+      } catch {
+        if (!controller.signal.aborted) {
+          setSearchResults([]);
+          setSearchError('Search service unavailable. You can still select manually.');
+          setShowSearchDropdown(true);
+          setConnectionStatus('OpenStreetMap Ready');
+        }
+      } finally {
+        if (!controller.signal.aborted) setSearchLoading(false);
+      }
+    }, 420);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [isDrawingBoundary, mapMode, site.address]);
 
   const hasSiteBoundary = boundary.length >= 3;
 
@@ -4088,6 +4183,10 @@ out tags;`;
     const siteRecommendations = recommendations.slice(0, 8).map(([group, text]) => `${group}: ${text}`);
     projectContext.updateWorkspace({
       siteAddress: site.address || 'Selected site',
+      siteLatitude: site.latitude,
+      siteLongitude: site.longitude,
+      siteSearchName: site.address?.split(',')[0] || 'Selected site',
+      siteCityRegion: site.address?.split(',').slice(-3, -1).join(', ').trim() || '',
       siteArea: site.area,
       sitePerimeter: site.perimeter,
       siteSummary: reportLines.slice(0, 12).join('\n'),
@@ -4287,6 +4386,7 @@ out tags;`;
     setSelectedVertexIndex(null);
     setSiteMoreToolsOpen(false);
     setShowSearchDropdown(false);
+    setShowRecentSearches(false);
     if (boundary.length === 0) setMassing({ ...massing, enabled: false });
     showNotice('Click the lot corners. Click Finish when done.');
   }
@@ -4354,6 +4454,10 @@ out tags;`;
       return;
     }
     if (mapMode === 'leaflet') {
+      if (searchResults.length && site.address.trim()) {
+        selectSearchResult(searchResults[Math.max(0, Math.min(activeSearchIndex, searchResults.length - 1))]);
+        return;
+      }
       try {
         const rawQuery = site.address.trim();
         if (!rawQuery) {
@@ -4366,45 +4470,10 @@ out tags;`;
         setSearchError('');
         setSearchResults([]);
         setConnectionStatus('Searching OpenStreetMap...');
-        const cleanedQuery = rawQuery.replace(/[^\w\s.,-]/g, ' ').replace(/\s+/g, ' ').trim();
-        const queryVariants = Array.from(new Set([
-          rawQuery,
-          `${rawQuery} Philippines`,
-          cleanedQuery,
-          `${cleanedQuery} Philippines`,
-          cleanedQuery.split(',').slice(-2).join(' ').trim(),
-        ].filter(Boolean)));
-        const allResults: any[] = [];
-        for (const query of queryVariants) {
-          const params = new URLSearchParams({ format: 'json', addressdetails: '1', limit: '8', bounded: '0', countrycodes: 'ph', q: query });
-          const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`);
-          if (!response.ok) throw new Error('Search service unavailable');
-          const results = await response.json();
-          if (Array.isArray(results)) allResults.push(...results);
-          if (Array.isArray(results) && results.length >= 3) break;
-        }
-        const seen = new Set<string>();
-        const mappedResults: SiteSearchResult[] = allResults.map((result: any, index: number) => {
-          const address = result.address ?? {};
-          const name = result.name || address.school || address.amenity || address.building || address.road || address.suburb || address.city || address.town || address.village || result.display_name?.split(',')[0] || 'Search result';
-          const lat = Number(result.lat);
-          const lng = Number(result.lon);
-          return {
-            id: `${result.place_id ?? `${lat}-${lng}-${index}`}`,
-            name,
-            address: result.display_name ?? 'OpenStreetMap result',
-            type: result.type || result.class || address.amenity || 'place',
-            lat,
-            lng,
-            distanceMeters: Number.isFinite(lat) && Number.isFinite(lng) ? distanceMetersBetween(mapCenter, { lat, lng }) : undefined,
-          };
-        }).filter((result) => {
-          if (!Number.isFinite(result.lat) || !Number.isFinite(result.lng) || seen.has(result.id)) return false;
-          seen.add(result.id);
-          return true;
-        }).slice(0, 8);
+        const mappedResults = await fetchNominatimSuggestions(rawQuery);
         if (mappedResults.length) {
           setSearchResults(mappedResults);
+          setActiveSearchIndex(0);
           setShowSearchDropdown(true);
           setShowRecentSearches(false);
           setConnectionStatus('OpenStreetMap Ready');
@@ -4436,7 +4505,16 @@ out tags;`;
     setShowSearchDropdown(false);
     setShowRecentSearches(false);
     setSearchError('');
-    setRecentSearches((current) => [result, ...current.filter((item) => item.id !== result.id)].slice(0, 3));
+    setActiveSearchIndex(0);
+    setRecentSearches((current) => [result, ...current.filter((item) => item.id !== result.id)].slice(0, 6));
+    projectContext?.updateWorkspace({
+      siteAddress: result.address,
+      siteLatitude: result.lat,
+      siteLongitude: result.lng,
+      siteSearchName: result.name,
+      siteCityRegion: result.cityRegion ?? '',
+      siteSummary: `Location selected: ${result.name}\n${result.address}\nCoordinates: ${result.lat.toFixed(5)}, ${result.lng.toFixed(5)}\nBoundary: not drawn yet.`,
+    });
     showNotice('Site location selected.');
   }
 
@@ -4451,6 +4529,13 @@ out tags;`;
   function useMapCenter() {
     setSite((current) => ({ ...current, latitude: mapCenter.lat, longitude: mapCenter.lng, address: current.address || 'Selected map center' }));
     setLocationSelected(true);
+    projectContext?.updateWorkspace({
+      siteAddress: site.address || 'Selected map center',
+      siteLatitude: mapCenter.lat,
+      siteLongitude: mapCenter.lng,
+      siteSearchName: site.address || 'Selected map center',
+      siteCityRegion: '',
+    });
     showNotice('Map center selected as site location.');
   }
 
@@ -4817,18 +4902,37 @@ ${notes}
 
               <div className="absolute left-4 top-4 z-10 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-1.5 rounded-xl border border-white/10 bg-black/65 p-1.5 shadow-2xl backdrop-blur">
                 <div className="relative" ref={searchDropdownRef}>
-                  <input ref={searchInputRef} className="h-9 w-[min(62vw,340px)] rounded-lg border border-white/10 bg-[#0b0f14]/90 px-3 pr-9 text-xs text-white outline-none placeholder:text-zinc-500 focus:border-cyan-300/50" value={site.address} onFocus={() => { setSiteMoreToolsOpen(false); if (searchResults.length > 0 || searchError) setShowSearchDropdown(true); }} onChange={(event) => setSite({ ...site, address: event.target.value })} onKeyDown={(event) => { if (event.key === 'Enter') searchAddress(); }} placeholder="Search place or address..." />
+                  <input ref={searchInputRef} className="h-9 w-[min(62vw,340px)] rounded-lg border border-white/10 bg-[#0b0f14]/90 px-3 pr-9 text-xs text-white outline-none placeholder:text-zinc-500 focus:border-cyan-300/50" value={site.address} onFocus={() => { setSiteMoreToolsOpen(false); if (searchResults.length > 0 || searchError || recentSearches.length > 0) setShowSearchDropdown(true); }} onChange={(event) => { setSite({ ...site, address: event.target.value }); setShowRecentSearches(false); }} onKeyDown={(event) => {
+                    if (event.key === 'ArrowDown') {
+                      event.preventDefault();
+                      setShowSearchDropdown(true);
+                      setActiveSearchIndex((index) => Math.min(index + 1, Math.max(searchResults.length - 1, 0)));
+                    } else if (event.key === 'ArrowUp') {
+                      event.preventDefault();
+                      setActiveSearchIndex((index) => Math.max(index - 1, 0));
+                    } else if (event.key === 'Enter') {
+                      event.preventDefault();
+                      if (searchResults.length) selectSearchResult(searchResults[Math.max(0, Math.min(activeSearchIndex, searchResults.length - 1))]);
+                      else searchAddress();
+                    } else if (event.key === 'Escape') {
+                      setShowSearchDropdown(false);
+                      setShowRecentSearches(false);
+                    }
+                  }} placeholder="Search place or address..." />
                   {searchLoading && <span className="absolute right-8 top-1/2 -translate-y-1/2 text-[10px] text-cyan-200">...</span>}
                   {site.address && <button type="button" className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-1.5 text-xs text-zinc-400 hover:bg-white/10 hover:text-white" onClick={clearSearch}>X</button>}
                   {recentSearches.length > 0 && !showSearchDropdown && !searchResults.length && !searchError && <button type="button" className="absolute left-0 top-full z-30 mt-1 rounded-md border border-white/10 bg-black/70 px-2 py-1 text-[10px] text-cyan-100 backdrop-blur hover:border-cyan-300/35" onClick={() => { setShowRecentSearches(true); setShowSearchDropdown(true); }}>Show recent</button>}
-                  {showSearchDropdown && (searchResults.length > 0 || searchError || (showRecentSearches && recentSearches.length > 0)) && <div className="absolute left-0 top-full z-40 mt-2 max-h-[220px] w-[min(82vw,360px)] overflow-auto rounded-xl border border-cyan-300/20 bg-[#090d12] p-1.5 shadow-2xl">
+                  {showSearchDropdown && (searchLoading || searchResults.length > 0 || searchError || site.address.trim().length >= 2 || recentSearches.length > 0) && <div className="absolute left-0 top-full z-40 mt-2 max-h-[220px] w-[min(62vw,340px)] overflow-auto rounded-xl border border-cyan-300/20 bg-[#090d12] p-1.5 shadow-2xl">
                     <div className="mb-1 flex items-center justify-between gap-2 px-1">
                       <button type="button" className="text-[10px] uppercase tracking-[0.12em] text-cyan-200 hover:text-white" onClick={() => setShowRecentSearches((value) => !value)}>{showRecentSearches ? 'Hide recent' : 'Show recent'}</button>
+                      {recentSearches.length > 0 && <button type="button" className="text-[10px] uppercase tracking-[0.12em] text-zinc-400 hover:text-white" onClick={() => { setRecentSearches([]); setShowRecentSearches(false); }}>Clear recent</button>}
                       <button type="button" className="rounded px-2 py-0.5 text-xs text-zinc-400 hover:bg-white/10 hover:text-white" onClick={() => { setShowSearchDropdown(false); setShowRecentSearches(false); }}>Close</button>
                     </div>
+                    {searchLoading && <p className="rounded border border-cyan-300/20 bg-cyan-300/10 p-2 text-xs text-cyan-100">Searching places...</p>}
                     {searchError && <p className="rounded border border-amber-300/20 bg-amber-300/10 p-2 text-xs text-amber-100">{searchError}</p>}
-                    {searchResults.map((result) => <button key={result.id} type="button" className="mt-1 w-full rounded-lg border border-white/10 bg-[#111827] px-2 py-1.5 text-left hover:border-cyan-300/40" onClick={() => selectSearchResult(result)}><span className="block text-xs font-semibold text-white">{result.name}</span><span className="mt-0.5 block truncate text-[11px] text-zinc-400">{result.address}</span><span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-cyan-200">{result.type} · OpenStreetMap{result.distanceMeters !== undefined ? ` · ${(result.distanceMeters / 1000).toFixed(1)} km from map center` : ''}</span></button>)}
-                    {showRecentSearches && recentSearches.length > 0 && <><p className="px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-zinc-500">Recent</p>{recentSearches.map((result) => <button key={result.id} type="button" className="mt-1 w-full rounded-lg border border-white/10 bg-[#111827] px-2 py-1.5 text-left hover:border-cyan-300/40" onClick={() => selectSearchResult(result)}><span className="block text-xs font-semibold text-white">{result.name}</span><span className="mt-0.5 block truncate text-[11px] text-zinc-400">{result.address}</span></button>)}</>}
+                    {!searchLoading && !searchError && site.address.trim().length >= 2 && searchResults.length === 0 && <p className="rounded border border-white/10 bg-[#111827] p-2 text-xs text-zinc-300">No places found. Try a shorter name or click on the map.</p>}
+                    {searchResults.map((result, index) => <button key={result.id} type="button" className={`mt-1 w-full rounded-lg border px-2 py-1.5 text-left hover:border-cyan-300/40 ${activeSearchIndex === index ? 'border-cyan-300/45 bg-cyan-300/15' : 'border-white/10 bg-[#111827]'}`} onMouseEnter={() => setActiveSearchIndex(index)} onClick={() => selectSearchResult(result)}><span className="block text-xs font-semibold text-white">{result.name}</span><span className="mt-0.5 block truncate text-[11px] text-zinc-400">{result.cityRegion || result.address}</span><span className="mt-0.5 block truncate text-[11px] text-zinc-500">{result.address}</span><span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-cyan-200">{result.type} · OpenStreetMap{result.distanceMeters !== undefined ? ` · ${(result.distanceMeters / 1000).toFixed(1)} km from map center` : ''}</span></button>)}
+                    {showRecentSearches && recentSearches.length > 0 && <><p className="px-2 py-1 text-[10px] uppercase tracking-[0.14em] text-zinc-500">Recent</p>{recentSearches.map((result) => <button key={result.id} type="button" className="mt-1 w-full rounded-lg border border-white/10 bg-[#111827] px-2 py-1.5 text-left hover:border-cyan-300/40" onClick={() => selectSearchResult(result)}><span className="block text-xs font-semibold text-white">{result.name}</span><span className="mt-0.5 block truncate text-[11px] text-zinc-400">{result.cityRegion || result.address}</span><span className="mt-0.5 block text-[10px] uppercase tracking-[0.12em] text-cyan-200">OpenStreetMap</span></button>)}</>}
                   </div>}
                 </div>
                 <button className="h-9 rounded-lg border border-cyan-300/35 bg-cyan-300/15 px-3 text-xs font-semibold text-cyan-50 hover:bg-cyan-300/25" onClick={searchAddress}>{searchLoading ? '...' : 'Search'}</button>
@@ -5491,6 +5595,10 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
     projectName: 'Untitled ArchiVault Project',
     projectType: 'Architecture student project',
     siteAddress: '',
+    siteLatitude: 0,
+    siteLongitude: 0,
+    siteSearchName: '',
+    siteCityRegion: '',
     siteArea: 0,
     sitePerimeter: 0,
     siteSummary: '',
