@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState, Suspense, lazy } from 'react';
 import { CircleMarker, MapContainer, Marker, Polygon as LeafletPolygon, Polyline, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import {
   BoxSelect,
@@ -30,10 +30,60 @@ import { ActiveTab } from '../types';
 import BimStudioTab from './BimStudioTab';
 import OptimizationPanel, { CommandRow } from './OptimizationPanel';
 
+// Lazy load Concept3DView to prevent Canvas import issues with react-leaflet context
+const Concept3DView = lazy(() => import('./site/Concept3DView'));
+const AnyMapContainer = MapContainer as any;
+const AnyTileLayer = TileLayer as any;
+const AnyMarker = Marker as any;
+const AnyCircleMarker = CircleMarker as any;
+
 const SUPPORTED_CAD_EXTENSIONS = ['.dwg', '.dxf', '.obj'];
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080';
 
 type DashboardProps = { activeTab: ActiveTab; setActiveTab: (tab: ActiveTab) => void };
+type ProjectWorkspaceData = {
+  projectName: string;
+  projectType: string;
+  siteAddress: string;
+  siteArea: number;
+  sitePerimeter: number;
+  siteSummary: string;
+  opportunities: string[];
+  constraints: string[];
+  designGoals: string[];
+  requiredSpaces: Array<{ name: string; area?: number; zone?: string }>;
+  conceptKeywords: string[];
+  conceptStatement: string;
+  bubbleDiagramSpaces: Array<{ name: string; area?: number; zone?: string }>;
+  zoningGroups: Record<string, string[]>;
+  floorPlanDraft: Record<string, unknown>;
+  materialEstimate: Record<string, unknown>;
+  costEstimate: Record<string, unknown>;
+  plotSheetData: Record<string, unknown>;
+  savedReports: string[];
+};
+type DesignBriefState = {
+  scope: { title: string; type: string; problem: string; objective: string; outputs: string; deadline: string; location: string; deliverables: string };
+  client: { userType: string; style: string; desiredSpaces: string; mustHave: string; avoid: string; budgetPriority: string; comfort: string; requests: string };
+  scale: { lotSize: string; buildingSize: string; floors: string; floorArea: string; humanScale: string; drawingScale: string; sheetSize: string };
+  use: { mainFunction: string; secondaryFunctions: string; userGroups: string; occupancy: string; privacy: string; activities: string; spaces: string };
+  surroundings: { types: string; heights: string; style: string; materials: string; shadow: string; privacy: string; views: string; noise: string };
+  neighborhood: { character: string; roads: string; transport: string; amenities: string; movement: string; needs: string; safety: string; culture: string };
+  site: { shape: string; size: string; slope: string; drainage: string; sun: string; wind: string; vegetation: string; noise: string; views: string; access: string };
+  codes: { reference: string; occupancy: string; setbacks: string; height: string; exits: string; stairs: string; accessibility: string; parking: string; ventilation: string };
+  zoning: { classification: string; use: string; far: string; coverage: string; height: string; setbacks: string; openSpace: string; parking: string; restrictions: string };
+};
+type DesignBriefSuggestion = {
+  type: 'good' | 'warning' | 'idea' | 'critical' | 'next';
+  text: string;
+  action?: { label: string; tab: ActiveTab; subtool?: string };
+};
+type ProjectWorkspaceContextValue = {
+  workspace: ProjectWorkspaceData;
+  updateWorkspace: (patch: Partial<ProjectWorkspaceData>) => void;
+};
+export const ProjectWorkspaceContext = React.createContext<ProjectWorkspaceContextValue | null>(null);
+export const useProjectWorkspace = () => React.useContext(ProjectWorkspaceContext);
 type SelectedCadAsset = { name: string; extension: string; sizeMb: number };
 type FloorPlanForm = { width: number; length: number; wall: number; columnW: number; columnD: number; rotationAngle: number };
 type BudgetView = { id: string; label: string; width: number; height: number; scale: number; viewType?: string; priority?: number };
@@ -3390,16 +3440,16 @@ function LeafletMapClickTools({ site, activeTool, finishBoundary, setLocationSel
   return null;
 }
 
-function LeafletSiteMap({ site, boundary, activeTool, selectedVertexIndex, showSiteBoundary, mapProvider, googleEnabled, fitRequest, finishBoundary, setLocationSelected, setMapCenter, setSelectedVertexIndex, setSite, setBoundary, showNotice }: LeafletSiteMapProps) {
+function LeafletMapChildren({ site, boundary, activeTool, selectedVertexIndex, showSiteBoundary, mapProvider, googleEnabled, fitRequest, finishBoundary, setLocationSelected, setMapCenter, setSelectedVertexIndex, setSite, setBoundary, showNotice }: LeafletSiteMapProps) {
   const tileLayer = getSiteTileLayer(mapProvider, googleEnabled);
   const polygonPositions = boundary.map((point) => [point.lat, point.lng]) as any;
 
   return (
-    <MapContainer center={[site.latitude, site.longitude]} zoom={17} className="absolute inset-0 z-0 h-full w-full bg-[#080a0d]" scrollWheelZoom doubleClickZoom={false}>
-      <TileLayer key={tileLayer.url} attribution={tileLayer.attribution} url={tileLayer.url} subdomains={isGoogleSiteProvider(mapProvider) && googleEnabled ? ['0', '1', '2', '3'] : ['a', 'b', 'c']} />
+    <>
+      <AnyTileLayer key={tileLayer.url} attribution={tileLayer.attribution} url={tileLayer.url} subdomains={isGoogleSiteProvider(mapProvider) && googleEnabled ? ['0', '1', '2', '3'] : ['a', 'b', 'c']} />
       <LeafletMapController site={site} boundary={boundary} fitRequest={fitRequest} mapProvider={mapProvider} />
       <LeafletMapClickTools site={site} activeTool={activeTool} finishBoundary={finishBoundary} setLocationSelected={setLocationSelected} setMapCenter={setMapCenter} setSite={setSite} setBoundary={setBoundary} showNotice={showNotice} />
-      {activeTool !== 'draw' && <Marker
+      {activeTool !== 'draw' && <AnyMarker
         position={[site.latitude, site.longitude] as any}
         draggable
         eventHandlers={{
@@ -3418,7 +3468,7 @@ function LeafletSiteMap({ site, boundary, activeTool, selectedVertexIndex, showS
         <Polyline positions={polygonPositions} pathOptions={{ color: '#67e8f9', weight: 2, dashArray: '6 6' }} />
       )}
       {showSiteBoundary && activeTool !== 'edit' && boundary.map((point, index) => (
-        <CircleMarker
+        <AnyCircleMarker
           key={`dot-${point.lat}-${point.lng}-${index}`}
           center={[point.lat, point.lng] as any}
           radius={index === boundary.length - 1 ? 5 : 4}
@@ -3426,7 +3476,7 @@ function LeafletSiteMap({ site, boundary, activeTool, selectedVertexIndex, showS
         />
       ))}
       {showSiteBoundary && activeTool === 'edit' && boundary.map((point, index) => (
-        <Marker
+        <AnyMarker
           key={`${point.lat}-${point.lng}-${index}`}
           position={[point.lat, point.lng] as any}
           draggable
@@ -3443,7 +3493,15 @@ function LeafletSiteMap({ site, boundary, activeTool, selectedVertexIndex, showS
           }}
         />
       ))}
-    </MapContainer>
+    </>
+  );
+}
+
+function LeafletSiteMap({ site, boundary, activeTool, selectedVertexIndex, showSiteBoundary, mapProvider, googleEnabled, fitRequest, finishBoundary, setLocationSelected, setMapCenter, setSelectedVertexIndex, setSite, setBoundary, showNotice }: LeafletSiteMapProps) {
+  return (
+    <AnyMapContainer center={[site.latitude, site.longitude]} zoom={17} className="absolute inset-0 z-0 h-full w-full bg-[#080a0d]" scrollWheelZoom doubleClickZoom={false}>
+      <LeafletMapChildren site={site} boundary={boundary} activeTool={activeTool} selectedVertexIndex={selectedVertexIndex} showSiteBoundary={showSiteBoundary} mapProvider={mapProvider} googleEnabled={googleEnabled} fitRequest={fitRequest} finishBoundary={finishBoundary} setLocationSelected={setLocationSelected} setMapCenter={setMapCenter} setSelectedVertexIndex={setSelectedVertexIndex} setSite={setSite} setBoundary={setBoundary} showNotice={showNotice} />
+    </AnyMapContainer>
   );
 }
 
@@ -3641,6 +3699,7 @@ function SiteAnalysisTab() {
   const [connectionStatus, setConnectionStatus] = useState('OpenStreetMap Ready');
   const [notice, setNotice] = useState('');
   const googleMapsEnabled = apiKey.trim().length > 0;
+  const projectContext = useProjectWorkspace();
   const [site, setSite] = useState({
     address: '',
     latitude: 14.5995,
@@ -4016,6 +4075,32 @@ out tags;`;
     '',
     'Data note: Map, weather, places, zoning, and 3D layers may use placeholder data unless API providers are connected.',
   ], [activeAnalysis, climate.month, climate.time, climate.weatherProvider, constraints, feasibility.allowableGfa, feasibility.score, hasSiteBoundary, isDrawingBoundary, layerFindings, massing, massingCalc, opportunities, recommendations, site]);
+
+  function sendSiteToWorkspace(target: 'assistant' | 'concept' | 'code' | 'planner' | 'report') {
+    if (!projectContext) {
+      showNotice('Project workspace is not ready yet.');
+      return;
+    }
+    if (!hasSiteBoundary) {
+      showNotice('Draw a site boundary first so connected tools receive real site data.');
+      return;
+    }
+    const siteRecommendations = recommendations.slice(0, 8).map(([group, text]) => `${group}: ${text}`);
+    projectContext.updateWorkspace({
+      siteAddress: site.address || 'Selected site',
+      siteArea: site.area,
+      sitePerimeter: site.perimeter,
+      siteSummary: reportLines.slice(0, 12).join('\n'),
+      opportunities,
+      constraints,
+      designGoals: [...new Set([...(projectContext.workspace.designGoals ?? []), ...siteRecommendations.slice(0, 4)])],
+      conceptKeywords: [...new Set([...(projectContext.workspace.conceptKeywords ?? []), 'site-responsive', 'climate-aware', 'clear arrival', 'buffered privacy'])],
+      conceptStatement: projectContext.workspace.conceptStatement || `The design responds to the ${site.road.toLowerCase()} frontage, ${site.wind.toLowerCase()} wind, and site constraints through clear public arrival, shaded edges, and buffered private zones.`,
+      floorPlanDraft: target === 'planner' ? { source: 'Site Analysis boundary', siteArea: site.area, recommendedFrontage: site.road } : projectContext.workspace.floorPlanDraft,
+      savedReports: target === 'report' ? [...projectContext.workspace.savedReports, `Site Analysis - ${new Date().toLocaleDateString()}`] : projectContext.workspace.savedReports,
+    });
+    showNotice(target === 'assistant' ? 'Site data sent to Design Assistant.' : target === 'concept' ? 'Site data sent to Concept Helper.' : target === 'code' ? 'Site area sent to Code Check.' : target === 'planner' ? 'Site boundary sent to Concept Planner.' : 'Site analysis added to Project Report.');
+  }
 
   function saveApiKey() {
     showNotice('Google Maps key is managed by the developer through VITE_GOOGLE_MAPS_API_KEY.');
@@ -4668,7 +4753,9 @@ ${notes}
 
             <div className="relative min-h-[520px] flex-1 overflow-hidden rounded-2xl border border-cyan-300/20 bg-[#080a0d] shadow-inner md:min-h-0">
               {mapMode === 'leaflet' && siteViewMode === '2D' && (
-                <LeafletSiteMap site={site} boundary={boundary} activeTool={activeTool} selectedVertexIndex={selectedVertexIndex} showSiteBoundary={showSiteBoundary} mapProvider={mapProvider} googleEnabled={googleMapsEnabled} fitRequest={mapFitRequest} finishBoundary={finishBoundary} setLocationSelected={setLocationSelected} setMapCenter={setMapCenter} setSelectedVertexIndex={setSelectedVertexIndex} setSite={setSite} setBoundary={setBoundary} showNotice={showNotice} />
+                <Concept3DErrorBoundary mapError>
+                  <LeafletSiteMap site={site} boundary={boundary} activeTool={activeTool} selectedVertexIndex={selectedVertexIndex} showSiteBoundary={showSiteBoundary} mapProvider={mapProvider} googleEnabled={googleMapsEnabled} fitRequest={mapFitRequest} finishBoundary={finishBoundary} setLocationSelected={setLocationSelected} setMapCenter={setMapCenter} setSelectedVertexIndex={setSelectedVertexIndex} setSite={setSite} setBoundary={setBoundary} showNotice={showNotice} />
+                </Concept3DErrorBoundary>
               )}
               <div ref={mapRef} className={`${mapMode === 'google' && siteViewMode === '2D' ? 'block' : 'hidden'} absolute inset-0`} />
               {(mapMode === 'mock' || siteViewMode !== '2D') && (
@@ -4696,17 +4783,26 @@ ${notes}
                         onFallback={handleReal3dFallback}
                       />
                     ) : (
-                    <div className="absolute inset-8" style={{ perspective: '900px' }}>
-                      <div className="absolute inset-x-8 bottom-16 h-80 rotate-x-[58deg] border border-cyan-300/25 bg-cyan-300/5" style={{ transform: `rotateX(58deg) rotateZ(${threeD.orbit}deg) scale(${threeD.zoom})` }}>
-                        {threeD.roads && <><div className="absolute left-0 top-[66%] h-4 w-full bg-zinc-400/35" /><div className="absolute left-[72%] top-0 h-full w-4 bg-zinc-400/25" /></>}
-                        {threeD.buildings && [10, 22, 65, 78].map((left, index) => <div key={left} className="absolute top-[18%] h-[20%] w-[12%] border border-white/10 bg-white/10" style={{ left: `${left}%`, boxShadow: `0 -${22 + index * 10}px 0 rgba(255,255,255,.08)` }} />)}
-                        {showSiteBoundary && <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none"><polygon points={boundaryPath} fill="rgba(34,211,238,.22)" stroke="#67e8f9" strokeWidth="0.7" /></svg>}
-                        {massing.enabled && <div className="absolute border border-cyan-100 bg-cyan-300/25" style={{ left: `${Math.max(8, Math.min(82, massing.x - massing.width / 2))}%`, top: `${Math.max(8, Math.min(78, massing.y - massing.length / 2))}%`, width: `${Math.max(10, Math.min(50, massing.width))}%`, height: `${Math.max(10, Math.min(50, massing.length))}%`, transform: `rotate(${massing.rotation}deg)`, boxShadow: `0 -${Math.max(18, Math.min(100, massing.height * 4))}px 0 rgba(34,211,238,.20)` }} />}
-                        {threeD.sunShadow && <div className="absolute left-[50%] top-[48%] h-[20%] bg-black/40" style={{ width: `${shadowLength}%`, transform: `rotate(${shadowAngle}deg)`, transformOrigin: 'left center' }} />}
-                      </div>
-                      <span className="absolute right-6 top-6 h-20 border-l-2 border-yellow-300" style={{ transform: `rotate(${climate.orientation}deg)` }} />
-                      <div className="absolute left-4 top-4 max-w-sm rounded-xl border border-cyan-300/20 bg-black/65 p-3 text-xs leading-5 text-cyan-100">{siteViewMode === 'REAL_3D' ? 'Real Google 3D is not connected. Showing Concept 3D instead.' : 'Conceptual 3D preview based on the site boundary you drew in Leaflet.'}</div>
-                    </div>
+                    <Concept3DErrorBoundary>
+                      <Suspense fallback={<div className="h-full w-full flex items-center justify-center bg-black/50 text-zinc-400">Loading 3D view...</div>}>
+                        <Concept3DView
+                          boundary={boundary}
+                          massing={massing}
+                          showSiteBoundary={showSiteBoundary}
+                          hasSiteBoundary={hasSiteBoundary}
+                          threeD={threeD}
+                          climate={climate}
+                          onAddMassing={() => {
+                            if (!hasSiteBoundary) {
+                              showNotice('Draw a site boundary first.');
+                              return;
+                            }
+                            setMassing((current) => ({ ...current, enabled: true }));
+                            showNotice('Building mass added. Adjust its size in Concept Planner.');
+                          }}
+                        />
+                      </Suspense>
+                    </Concept3DErrorBoundary>
                     )
                   ) : (
                     <>
@@ -4887,7 +4983,7 @@ ${notes}
         {reportDrawerOpen && <div className="mt-2 grid max-h-[34vh] gap-3 overflow-y-auto xl:grid-cols-[1fr_1fr_260px]">
           <div className="rounded-xl border border-emerald-300/20 bg-emerald-300/10 p-3"><p className="text-sm font-semibold text-emerald-50">Opportunities</p><ul className="mt-2 space-y-1.5 text-xs leading-5 text-emerald-50/85">{opportunities.map((item) => <li key={item}>{item}</li>)}</ul></div>
           <div className="rounded-xl border border-amber-300/20 bg-amber-300/10 p-3"><p className="text-sm font-semibold text-amber-50">Constraints + Warnings</p><ul className="mt-2 space-y-1.5 text-xs leading-5 text-amber-50/85">{[...constraints, ...boundaryWarnings, ...massingCalc.warnings].map((item) => <li key={item}>{item}</li>)}</ul></div>
-          <div className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-3"><p className="text-sm font-semibold text-cyan-50">Report Actions</p><div className="mt-3 grid gap-2"><button className={buttonClass()} onClick={() => downloadSimplePdf('ArchiVault_Site_Analysis_Report.pdf', 'ArchiVault Site Analysis Report', reportLines)}>Export PDF</button><button className={buttonClass('secondary')} onClick={copyReport}>Copy Summary</button><button className={buttonClass('secondary')} onClick={saveSiteStudy}>Save Study</button></div></div>
+          <div className="rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-3"><p className="text-sm font-semibold text-cyan-50">Connected Workflow</p><div className="mt-3 grid gap-2"><button className={buttonClass()} onClick={() => sendSiteToWorkspace('assistant')}>Send to Design Assistant</button><button className={buttonClass('secondary')} onClick={() => sendSiteToWorkspace('concept')}>Use in Concept Helper</button><button className={buttonClass('secondary')} onClick={() => sendSiteToWorkspace('code')}>Send Area to Code Check</button><button className={buttonClass('secondary')} onClick={() => sendSiteToWorkspace('planner')}>Send Boundary to Planner</button><button className={buttonClass('secondary')} onClick={() => sendSiteToWorkspace('report')}>Add to Project Report</button><button className={buttonClass()} onClick={() => downloadSimplePdf('ArchiVault_Site_Analysis_Report.pdf', 'ArchiVault Site Analysis Report', reportLines)}>Export PDF</button><button className={buttonClass('secondary')} onClick={copyReport}>Copy Summary</button><button className={buttonClass('secondary')} onClick={saveSiteStudy}>Save Study</button></div></div>
         </div>}
       </div>
     </section>
@@ -5052,7 +5148,7 @@ ${notes}
                   <svg className="absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
                     {boundary.length > 0 && <polygon points={boundaryPath} fill="rgba(34,211,238,.16)" stroke="#67e8f9" strokeWidth="0.7" />}
                     <circle cx="50" cy="46" r="1.8" fill="#fef08a" />
-                    <line x1="50" y1="46" x2={50 + Math.cos((site.north - 90) * Math.PI / 180) * 18} y2={46 + Math.sin((site.north - 90) * Math.PI / 180) * 18} stroke="#fde047" strokeWidth="0.5" />
+                    <line x1="50" y1="46" x2={50 + Math.cos((climate.orientation - 90) * Math.PI / 180) * 18} y2={46 + Math.sin((climate.orientation - 90) * Math.PI / 180) * 18} stroke="#fde047" strokeWidth="0.5" />
                   </svg>
                   {boundary.map((point, index) => (
                     <button
@@ -5301,6 +5397,37 @@ ${notes}
   );
 }
 
+// Error boundary for Leaflet and 3D components  
+class Concept3DErrorBoundary extends React.Component<{ children: React.ReactNode; mapError?: boolean }, { hasError: boolean }> {
+  constructor(props: { children: React.ReactNode; mapError?: boolean }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error('Concept3D/Map Error:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      const mapError = this.props.mapError;
+      return (
+        <div className="h-full w-full flex items-center justify-center bg-black/50 text-center text-zinc-400">
+          <div>
+            <p>{mapError ? '2D Map unavailable' : 'Concept 3D failed to load'}</p>
+            <p className="text-xs text-zinc-500 mt-2">{mapError ? 'Use Concept 3D view instead' : 'Return to 2D Map view'}</p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectImportRef = useRef<HTMLInputElement>(null);
@@ -5360,6 +5487,42 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
     apertureHeight: 2500,
   });
   const [commands, setCommands] = useState<CommandRow[]>(defaultCommands);
+  const [projectWorkspace, setProjectWorkspace] = useState<ProjectWorkspaceData>({
+    projectName: 'Untitled ArchiVault Project',
+    projectType: 'Architecture student project',
+    siteAddress: '',
+    siteArea: 0,
+    sitePerimeter: 0,
+    siteSummary: '',
+    opportunities: [],
+    constraints: [],
+    designGoals: ['Respond to site access, climate, and public/private flow.'],
+    requiredSpaces: [],
+    conceptKeywords: [],
+    conceptStatement: '',
+    bubbleDiagramSpaces: [],
+    zoningGroups: {},
+    floorPlanDraft: {},
+    materialEstimate: {},
+    costEstimate: {},
+    plotSheetData: {},
+    savedReports: [],
+  });
+  const [designBrief, setDesignBrief] = useState<DesignBriefState>({
+    scope: { title: '', type: '', problem: '', objective: '', outputs: '', deadline: '', location: '', deliverables: '' },
+    client: { userType: '', style: '', desiredSpaces: '', mustHave: '', avoid: '', budgetPriority: '', comfort: '', requests: '' },
+    scale: { lotSize: '', buildingSize: '', floors: '', floorArea: '', humanScale: '', drawingScale: '', sheetSize: '' },
+    use: { mainFunction: '', secondaryFunctions: '', userGroups: '', occupancy: '', privacy: '', activities: '', spaces: '' },
+    surroundings: { types: '', heights: '', style: '', materials: '', shadow: '', privacy: '', views: '', noise: '' },
+    neighborhood: { character: '', roads: '', transport: '', amenities: '', movement: '', needs: '', safety: '', culture: '' },
+    site: { shape: '', size: '', slope: '', drainage: '', sun: '', wind: '', vegetation: '', noise: '', views: '', access: '' },
+    codes: { reference: '', occupancy: '', setbacks: '', height: '', exits: '', stairs: '', accessibility: '', parking: '', ventilation: '' },
+    zoning: { classification: '', use: '', far: '', coverage: '', height: '', setbacks: '', openSpace: '', parking: '', restrictions: '' },
+  });
+  const [designBriefNote, setDesignBriefNote] = useState('');
+  const updateWorkspace = useCallback((patch: Partial<ProjectWorkspaceData>) => {
+    setProjectWorkspace((current) => ({ ...current, ...patch }));
+  }, []);
   const normalizedTab: ActiveTab =
     activeTab === 'floorplan' ? 'planning' :
     activeTab === 'lab' ? 'plots' :
@@ -5402,6 +5565,224 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
     ? toolIndex.filter((tool) => `${tool.label} ${tool.keywords}`.toLowerCase().includes(toolSearch.toLowerCase())).slice(0, 8)
     : [];
 
+  const designWorkflowStages = useMemo(() => [
+    ['Brief', Boolean(projectWorkspace.projectType || projectWorkspace.designGoals.length)],
+    ['Site', projectWorkspace.siteArea > 0],
+    ['Concept', Boolean(projectWorkspace.conceptStatement || projectWorkspace.conceptKeywords.length)],
+    ['Spaces', projectWorkspace.requiredSpaces.length > 0],
+    ['Bubble', projectWorkspace.bubbleDiagramSpaces.length > 0],
+    ['Zoning', Object.keys(projectWorkspace.zoningGroups).length > 0],
+    ['Layout', Object.keys(projectWorkspace.floorPlanDraft).length > 0],
+    ['Materials', Object.keys(projectWorkspace.materialEstimate).length > 0 || Object.keys(projectWorkspace.costEstimate).length > 0],
+    ['Report', projectWorkspace.savedReports.length > 0],
+  ] as const, [projectWorkspace]);
+  const projectProgress = Math.round((designWorkflowStages.filter(([, done]) => done).length / designWorkflowStages.length) * 100);
+  const nextDesignAction = useMemo(() => {
+    if (projectWorkspace.siteArea <= 0) return { text: 'Start by selecting your site in Site Analysis.', tab: 'site' as ActiveTab };
+    if (!projectWorkspace.conceptStatement && projectWorkspace.conceptKeywords.length === 0) return { text: 'Generate design recommendations from your site analysis.', tab: 'render' as ActiveTab, subtool: 'Concept Helper' };
+    if (projectWorkspace.requiredSpaces.length === 0) return { text: 'Add required spaces or paste notes to extract room requirements.', tab: 'planning' as ActiveTab, subtool: 'Bubble Diagram' };
+    if (projectWorkspace.bubbleDiagramSpaces.length === 0) return { text: 'Create a bubble diagram to organize adjacency.', tab: 'planning' as ActiveTab, subtool: 'Bubble Diagram' };
+    if (Object.keys(projectWorkspace.zoningGroups).length === 0) return { text: 'Convert spaces into public, private, service, and circulation zones.', tab: 'planning' as ActiveTab, subtool: 'Bubble Diagram' };
+    if (Object.keys(projectWorkspace.floorPlanDraft).length === 0) return { text: 'Generate a starter floor plan block layout.', tab: 'planning' as ActiveTab, subtool: 'Stair + Floor Plan' };
+    if (Object.keys(projectWorkspace.materialEstimate).length === 0) return { text: 'Estimate materials and cost from your current room areas.', tab: 'materials' as ActiveTab, subtool: 'Quantity Estimator' };
+    return { text: 'Export your project summary report.', tab: 'reports' as ActiveTab };
+  }, [projectWorkspace]);
+
+  const updateDesignBrief = useCallback((section: keyof DesignBriefState, field: string, value: string) => {
+    setDesignBrief((current) => ({
+      ...current,
+      [section]: { ...current[section], [field]: value },
+    }));
+  }, []);
+
+  const splitBriefList = useCallback((text: string) => text
+    .split(/[\n,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean), []);
+
+  const briefRequiredSpaces = useMemo(() => {
+    const spaces = [
+      ...splitBriefList(designBrief.client.desiredSpaces),
+      ...splitBriefList(designBrief.client.mustHave),
+      ...splitBriefList(designBrief.use.spaces),
+      ...splitBriefList(designBrief.use.activities).map((activity) => activity.replace(/^for\s+/i, '')),
+    ];
+    return Array.from(new Set(spaces)).slice(0, 18);
+  }, [designBrief.client.desiredSpaces, designBrief.client.mustHave, designBrief.use.activities, designBrief.use.spaces, splitBriefList]);
+
+  const briefCompletion = useMemo(() => {
+    const sections = [
+      { key: 'Project scope', done: Boolean(designBrief.scope.title && designBrief.scope.type && designBrief.scope.objective) },
+      { key: 'Client/user needs', done: Boolean(designBrief.client.userType && (designBrief.client.desiredSpaces || designBrief.client.mustHave)) },
+      { key: 'Building use', done: Boolean(designBrief.use.mainFunction && (designBrief.use.activities || designBrief.use.spaces)) },
+      { key: 'Required spaces', done: briefRequiredSpaces.length > 0 },
+      { key: 'Scale', done: Boolean(designBrief.scale.lotSize || projectWorkspace.siteArea > 0 || designBrief.scale.floorArea) },
+      { key: 'Site conditions', done: Boolean(designBrief.site.shape || designBrief.site.sun || designBrief.site.wind || designBrief.site.access) },
+      { key: 'Surrounding buildings', done: Boolean(designBrief.surroundings.types || designBrief.surroundings.heights || designBrief.surroundings.noise) },
+      { key: 'Neighborhood', done: Boolean(designBrief.neighborhood.character || designBrief.neighborhood.transport || designBrief.neighborhood.amenities) },
+      { key: 'Code notes', done: Boolean(designBrief.codes.occupancy || designBrief.codes.reference || designBrief.codes.stairs) },
+      { key: 'Zoning notes', done: Boolean(designBrief.zoning.classification || designBrief.zoning.far || designBrief.zoning.height) },
+    ];
+    const score = Math.round((sections.filter((section) => section.done).length / sections.length) * 100);
+    const label = score >= 85 ? 'Ready to start design' : score >= 70 ? 'Good, but some research is missing' : score >= 50 ? 'Needs more research' : 'Too early to design';
+    return { sections, score, label, missing: sections.filter((section) => !section.done).map((section) => section.key) };
+  }, [briefRequiredSpaces.length, designBrief, projectWorkspace.siteArea]);
+
+  const designBriefSuggestions = useMemo<DesignBriefSuggestion[]>(() => {
+    const suggestions: DesignBriefSuggestion[] = [];
+    const lower = (value: string) => value.toLowerCase();
+    const floorArea = Number(designBrief.scale.floorArea.replace(/[^\d.]/g, '')) || 0;
+    const lotArea = Number(designBrief.scale.lotSize.replace(/[^\d.]/g, '')) || projectWorkspace.siteArea || 0;
+    const floors = Number(designBrief.scale.floors.replace(/[^\d.]/g, '')) || 0;
+    const deadlineTime = designBrief.scope.deadline ? new Date(designBrief.scope.deadline).getTime() : 0;
+    const daysLeft = deadlineTime ? Math.ceil((deadlineTime - Date.now()) / 86400000) : 999;
+
+    if (!designBrief.scope.objective) suggestions.push({ type: 'critical', text: 'Add a clear main design objective before starting the concept.' });
+    if (!designBrief.scope.outputs && !designBrief.scope.deliverables) suggestions.push({ type: 'warning', text: 'List the required drawings or deliverables so reports and sheets can be prepared early.' });
+    if (daysLeft <= 10) suggestions.push({ type: 'warning', text: 'Deadline is near. Prioritize concept, zoning, and presentation-ready outputs first.' });
+    if (designBrief.scope.type) suggestions.push({ type: 'idea', text: 'Use the selected project type to generate recommended spaces and concept keywords.', action: { label: 'Open Concept Helper', tab: 'render', subtool: 'Concept Helper' } });
+
+    if (!designBrief.client.userType) suggestions.push({ type: 'critical', text: 'Define who will use the building. This affects space planning and zoning.' });
+    if (designBrief.client.style) suggestions.push({ type: 'idea', text: 'Use the preferred design style in the Concept Helper and material palette.' });
+    if (briefRequiredSpaces.length > 0) suggestions.push({ type: 'next', text: 'Next: send must-have spaces to the Bubble Diagram Planner.', action: { label: 'Send to Bubble Diagram', tab: 'planning', subtool: 'Bubble Diagram' } });
+    if (designBrief.client.budgetPriority) suggestions.push({ type: 'idea', text: 'Use the budget priority in the Material Cost Estimator to guide material choices.', action: { label: 'Open Materials', tab: 'materials', subtool: 'Cost Estimator' } });
+
+    if (!lotArea) suggestions.push({ type: 'warning', text: 'Add the lot size or select a site boundary before generating a floor plan draft.', action: { label: 'Open Site Analysis', tab: 'site' } });
+    if (lotArea > 0 && floorArea > lotArea * 3) suggestions.push({ type: 'warning', text: 'Target floor area may be large for the lot. Check FAR, lot coverage, and open space.' });
+    if (floors >= 3) suggestions.push({ type: 'warning', text: 'Check height limits, stairs, exits, and accessibility for multi-floor planning.', action: { label: 'Open Code Check', tab: 'compliance' } });
+    if (designBrief.scale.drawingScale) suggestions.push({ type: 'good', text: 'Drawing scale can be sent to the Scale Reference Chart and Print Layout.', action: { label: 'Open Scale Helper', tab: 'planning', subtool: 'Scale Helper' } });
+
+    if (!designBrief.use.mainFunction) suggestions.push({ type: 'critical', text: 'Define the main building use before creating the bubble diagram.' });
+    if (splitBriefList(designBrief.use.userGroups).length >= 3) suggestions.push({ type: 'idea', text: 'Many user groups are listed. Separate public, semi-private, private, and service zones.' });
+    if (designBrief.use.activities) suggestions.push({ type: 'idea', text: 'Convert activities into required spaces for the Bubble Diagram.' });
+    if (designBrief.use.privacy) suggestions.push({ type: 'next', text: 'Use public/private needs in the Bubble Diagram Advisor and Zoning Planner.', action: { label: 'Open Bubble Diagram', tab: 'planning', subtool: 'Bubble Diagram' } });
+
+    if (/tall|high|multi|tower|mid-rise|high-rise/.test(lower(designBrief.surroundings.heights))) suggestions.push({ type: 'warning', text: 'Tall surroundings may affect shadow and privacy. Consider setbacks, courtyards, or clerestory windows.' });
+    if (/commercial|busy|noise|traffic/.test(lower(`${designBrief.surroundings.types} ${designBrief.surroundings.noise}`))) suggestions.push({ type: 'warning', text: 'Place quiet/private spaces away from noisy or commercial edges.' });
+    if (designBrief.surroundings.style) suggestions.push({ type: 'idea', text: 'Decide whether the design should blend with or contrast the surrounding architectural style.' });
+    if (designBrief.surroundings.privacy) suggestions.push({ type: 'idea', text: 'Use buffers, screens, setbacks, or service zones along sensitive edges.' });
+
+    if (/busy|commercial|mixed|market|traffic/.test(lower(designBrief.neighborhood.character))) suggestions.push({ type: 'idea', text: 'Place active/public spaces near the busy frontage and buffer private areas.' });
+    if (/quiet|residential/.test(lower(designBrief.neighborhood.character))) suggestions.push({ type: 'idea', text: 'Use softer edges, human-scale frontage, and privacy-sensitive zoning.' });
+    if (designBrief.neighborhood.transport) suggestions.push({ type: 'next', text: 'Nearby transport can guide the main entrance and pedestrian approach.', action: { label: 'Open Site Analysis', tab: 'site' } });
+    if (designBrief.neighborhood.safety) suggestions.push({ type: 'warning', text: 'Safety notes should inform lighting, visibility, clear access, and active frontage.' });
+
+    if (/west|afternoon/.test(lower(designBrief.site.sun))) suggestions.push({ type: 'warning', text: 'West sun exposure needs shading devices, trees, or service buffers.' });
+    if (designBrief.site.wind) suggestions.push({ type: 'idea', text: 'Use wind direction to support cross ventilation and room arrangement.' });
+    if (designBrief.site.vegetation) suggestions.push({ type: 'good', text: 'Preserve useful vegetation as heat buffer or courtyard feature.' });
+    if (designBrief.site.noise) suggestions.push({ type: 'warning', text: 'Use landscape buffers or place service spaces along noisy edges.' });
+    if (/irregular|narrow|triangular/.test(lower(designBrief.site.shape))) suggestions.push({ type: 'idea', text: 'Irregular sites work better with flexible zoning than a rigid grid.' });
+
+    if (!designBrief.codes.occupancy) suggestions.push({ type: 'critical', text: 'Add occupancy classification before checking stairs, exits, and ventilation.' });
+    if (designBrief.codes.stairs) suggestions.push({ type: 'next', text: 'Send stair notes or floor height to the Stair Calculator.', action: { label: 'Open Stair Calculator', tab: 'planning', subtool: 'Stair + Floor Plan' } });
+    if (designBrief.codes.ventilation) suggestions.push({ type: 'next', text: 'Send ventilation notes to the Window and Ventilation Planner.', action: { label: 'Open Ventilation Planner', tab: 'planning', subtool: 'Window/Ventilation' } });
+    if (designBrief.codes.accessibility) suggestions.push({ type: 'warning', text: 'Add accessibility notes to the Floor Plan Starter and Report.' });
+
+    if (!designBrief.zoning.classification) suggestions.push({ type: 'critical', text: 'Add zoning classification before estimating allowable floor area.' });
+    if (designBrief.zoning.far) suggestions.push({ type: 'next', text: 'Use FAR to calculate maximum GFA and guide Concept Massing.', action: { label: 'Open Code Check', tab: 'compliance' } });
+    if (designBrief.zoning.coverage) suggestions.push({ type: 'warning', text: 'Check if the building footprint fits within allowed lot coverage.' });
+    if (designBrief.zoning.setbacks) suggestions.push({ type: 'idea', text: 'Use setback notes in Site Analysis and Concept Planner.' });
+    if (designBrief.zoning.height) suggestions.push({ type: 'warning', text: 'Check number of floors and massing height against the height limit.' });
+
+    if (suggestions.length === 0) suggestions.push({ type: 'good', text: 'Brief is taking shape. Continue filling the missing research items before drafting.' });
+    return suggestions.slice(0, 7);
+  }, [briefRequiredSpaces.length, designBrief, projectWorkspace.siteArea, splitBriefList]);
+
+  const designBriefSummaryLines = useMemo(() => {
+    const projectTitle = designBrief.scope.title || projectWorkspace.projectName;
+    const siteAreaText = projectWorkspace.siteArea > 0 ? `${projectWorkspace.siteArea.toLocaleString()} sqm from Site Analysis` : (designBrief.scale.lotSize || designBrief.site.size || 'Not set');
+    return [
+      `Project: ${projectTitle}`,
+      `Type: ${designBrief.scope.type || designBrief.use.mainFunction || 'Not set'}`,
+      `Objective: ${designBrief.scope.objective || 'Add main objective'}`,
+      `Client/User: ${designBrief.client.userType || 'Not set'}`,
+      `Desired spaces: ${briefRequiredSpaces.length ? briefRequiredSpaces.join(', ') : 'Not set'}`,
+      `Site location: ${designBrief.scope.location || projectWorkspace.siteAddress || 'Not set'}`,
+      `Lot/Site area: ${siteAreaText}`,
+      `Site opportunities: ${[designBrief.site.views, designBrief.site.vegetation, designBrief.neighborhood.transport].filter(Boolean).join('; ') || 'Add site opportunities'}`,
+      `Site constraints: ${[designBrief.site.noise, designBrief.site.slope, designBrief.surroundings.privacy].filter(Boolean).join('; ') || 'Add site constraints'}`,
+      `Code notes: ${[designBrief.codes.occupancy, designBrief.codes.stairs, designBrief.codes.ventilation].filter(Boolean).join('; ') || 'Planning guide only. Verify official code requirements.'}`,
+      `Zoning notes: ${[designBrief.zoning.classification, designBrief.zoning.far, designBrief.zoning.height, designBrief.zoning.setbacks].filter(Boolean).join('; ') || 'Verify zoning with official local planning offices.'}`,
+      `Recommended next step: ${designBriefSuggestions.find((item) => item.action)?.text || nextDesignAction.text}`,
+    ];
+  }, [briefRequiredSpaces, designBrief, designBriefSuggestions, nextDesignAction.text, projectWorkspace]);
+
+  const designBriefSections = useMemo(() => ([
+    { id: 'scope' as const, title: '1. Project Scope', help: 'What is the project about, what should it solve, and what outputs are required?', fields: [['title', 'Project title', 'input'], ['type', 'Project type', 'input'], ['problem', 'Design problem', 'textarea'], ['objective', 'Main objective', 'textarea'], ['outputs', 'Required outputs', 'textarea'], ['deadline', 'Deadline', 'input'], ['location', 'Site location', 'input'], ['deliverables', 'Expected deliverables', 'textarea']] },
+    { id: 'client' as const, title: "2. Client's Desires", help: 'What does the user want, need, prefer, and avoid?', fields: [['userType', 'Client/user type', 'input'], ['style', 'Preferred design style', 'input'], ['desiredSpaces', 'Desired spaces', 'textarea'], ['mustHave', 'Must-have features', 'textarea'], ['avoid', 'Avoided features', 'textarea'], ['budgetPriority', 'Budget priority', 'input'], ['comfort', 'Comfort needs', 'textarea'], ['requests', 'Special requests', 'textarea']] },
+    { id: 'scale' as const, title: '3. Scale', help: 'How big is the project, how many people use it, and what drawing scale fits?', fields: [['lotSize', 'Lot size', 'input'], ['buildingSize', 'Building size', 'input'], ['floors', 'Number of floors', 'input'], ['floorArea', 'Target floor area', 'input'], ['humanScale', 'Human scale considerations', 'textarea'], ['drawingScale', 'Drawing scale', 'input'], ['sheetSize', 'Sheet size', 'input']] },
+    { id: 'use' as const, title: '4. Building Use', help: 'What happens inside and how public or private should each area be?', fields: [['mainFunction', 'Main building function', 'input'], ['secondaryFunctions', 'Secondary functions', 'textarea'], ['userGroups', 'User groups', 'textarea'], ['occupancy', 'Occupancy type', 'input'], ['privacy', 'Public/private needs', 'textarea'], ['activities', 'Activity list', 'textarea'], ['spaces', 'Space requirements', 'textarea']] },
+    { id: 'surroundings' as const, title: '5. Surrounding Buildings', help: 'What nearby buildings affect scale, privacy, sun, views, and noise?', fields: [['types', 'Nearby building types', 'textarea'], ['heights', 'Nearby building heights', 'input'], ['style', 'Nearby architectural style', 'textarea'], ['materials', 'Nearby materials', 'textarea'], ['shadow', 'Shadow impact', 'textarea'], ['privacy', 'Privacy concerns', 'textarea'], ['views', 'View opportunities', 'textarea'], ['noise', 'Noise sources', 'textarea']] },
+    { id: 'neighborhood' as const, title: '6. Neighborhood', help: 'What is the area character and how do people move around it?', fields: [['character', 'Neighborhood character', 'textarea'], ['roads', 'Nearby roads', 'textarea'], ['transport', 'Nearby transport', 'textarea'], ['amenities', 'Nearby schools/parks/shops', 'textarea'], ['movement', 'Pedestrian movement', 'textarea'], ['needs', 'Community needs', 'textarea'], ['safety', 'Safety issues', 'textarea'], ['culture', 'Cultural/social context', 'textarea']] },
+    { id: 'site' as const, title: '7. Site Conditions', help: 'What are the lot shape, sun, wind, access, views, and constraints?', fields: [['shape', 'Site shape', 'input'], ['size', 'Site size', 'input'], ['slope', 'Slope/topography', 'textarea'], ['drainage', 'Soil/drainage notes', 'textarea'], ['sun', 'Sun exposure', 'textarea'], ['wind', 'Wind direction', 'input'], ['vegetation', 'Existing vegetation', 'textarea'], ['noise', 'Noise exposure', 'textarea'], ['views', 'Views', 'textarea'], ['access', 'Access points', 'textarea']] },
+    { id: 'codes' as const, title: '8. Building Codes', help: 'Planning guide only. Always verify official building code requirements with local authorities or your instructor.', fields: [['reference', 'Code reference', 'input'], ['occupancy', 'Occupancy classification', 'input'], ['setbacks', 'Required setbacks', 'input'], ['height', 'Maximum height', 'input'], ['exits', 'Fire exits', 'textarea'], ['stairs', 'Stairs', 'textarea'], ['accessibility', 'Accessibility', 'textarea'], ['parking', 'Parking', 'textarea'], ['ventilation', 'Ventilation/light requirements', 'textarea']] },
+    { id: 'zoning' as const, title: '9. Zoning Laws', help: 'Zoning data must be verified with official local planning/zoning offices.', fields: [['classification', 'Zoning classification', 'input'], ['use', 'Allowable building use', 'input'], ['far', 'FAR limit', 'input'], ['coverage', 'Lot coverage', 'input'], ['height', 'Height limit', 'input'], ['setbacks', 'Required setbacks', 'input'], ['openSpace', 'Open space requirement', 'input'], ['parking', 'Parking requirement', 'input'], ['restrictions', 'Restrictions', 'textarea']] },
+  ]), []);
+
+  function inferSpaceZone(name: string) {
+    const text = name.toLowerCase();
+    if (/toilet|bath|storage|kitchen|service|utility|laundry|parking/.test(text)) return 'Service';
+    if (/bed|private|staff|office/.test(text)) return 'Private';
+    if (/hall|corridor|stair|lobby/.test(text)) return 'Circulation';
+    if (/garden|court|balcony|open/.test(text)) return 'Outdoor/Open Space';
+    return 'Public';
+  }
+
+  function sendDesignBrief(target: 'concept' | 'bubble' | 'site' | 'code' | 'report' | 'materials') {
+    const spaces = briefRequiredSpaces.map((name) => ({ name, zone: inferSpaceZone(name) }));
+    const goals = [
+      designBrief.scope.objective,
+      designBrief.client.comfort,
+      designBrief.site.sun ? `Respond to sun exposure: ${designBrief.site.sun}` : '',
+      designBrief.site.wind ? `Use wind direction: ${designBrief.site.wind}` : '',
+      designBrief.neighborhood.character ? `Respond to neighborhood: ${designBrief.neighborhood.character}` : '',
+    ].filter(Boolean);
+    const conceptKeywords = [
+      designBrief.client.style,
+      designBrief.scope.type,
+      designBrief.neighborhood.character,
+      designBrief.site.vegetation ? 'climate responsive' : '',
+      designBrief.site.views ? 'view oriented' : '',
+    ].filter(Boolean).flatMap((item) => splitBriefList(item)).slice(0, 12);
+    updateWorkspace({
+      projectName: designBrief.scope.title || projectWorkspace.projectName,
+      projectType: designBrief.scope.type || designBrief.use.mainFunction || projectWorkspace.projectType,
+      siteAddress: designBrief.scope.location || projectWorkspace.siteAddress,
+      siteArea: Number(designBrief.scale.lotSize.replace(/[^\d.]/g, '')) || projectWorkspace.siteArea,
+      siteSummary: designBriefSummaryLines.join('\n'),
+      opportunities: [designBrief.site.views, designBrief.site.vegetation, designBrief.neighborhood.transport, designBrief.neighborhood.amenities].filter(Boolean),
+      constraints: [designBrief.site.noise, designBrief.site.slope, designBrief.surroundings.privacy, designBrief.zoning.restrictions].filter(Boolean),
+      designGoals: goals.length ? goals : projectWorkspace.designGoals,
+      requiredSpaces: spaces.length ? spaces : projectWorkspace.requiredSpaces,
+      bubbleDiagramSpaces: target === 'bubble' && spaces.length ? spaces : projectWorkspace.bubbleDiagramSpaces,
+      zoningGroups: target === 'bubble' && spaces.length ? spaces.reduce<Record<string, string[]>>((groups, space) => {
+        const zone = space.zone ?? 'Public';
+        groups[zone] = [...(groups[zone] ?? []), space.name];
+        return groups;
+      }, {}) : projectWorkspace.zoningGroups,
+      conceptKeywords: conceptKeywords.length ? conceptKeywords : projectWorkspace.conceptKeywords,
+      conceptStatement: target === 'concept' ? `Design direction: ${designBrief.scope.objective || 'respond to project brief'}, for ${designBrief.client.userType || 'defined users'}, with ${designBrief.client.style || 'context-sensitive'} character.` : projectWorkspace.conceptStatement,
+      savedReports: target === 'report' ? [...projectWorkspace.savedReports, `Design Brief - ${designBrief.scope.title || 'Untitled Project'}`] : projectWorkspace.savedReports,
+    });
+    setDesignBriefNote(target === 'concept' ? 'Brief sent to Concept Helper.' : target === 'bubble' ? 'Spaces sent to Bubble Diagram and zoning groups prepared.' : target === 'site' ? 'Site notes sent to Site Analysis.' : target === 'code' ? 'Code and zoning notes sent to Compliance workflow.' : target === 'materials' ? 'Scale and floor area notes sent to Materials workflow.' : 'Design brief added to Project Report.');
+    if (target === 'concept') openTool('render', 'Concept Helper');
+    if (target === 'bubble') openTool('planning', 'Bubble Diagram');
+    if (target === 'site') openTool('site');
+    if (target === 'code') openTool('compliance');
+    if (target === 'materials') openTool('materials', 'Quantity Estimator');
+    if (target === 'report') openTool('reports');
+  }
+
+  function copyDesignBriefSummary() {
+    navigator.clipboard?.writeText(designBriefSummaryLines.join('\n'));
+    setDesignBriefNote('Design brief summary copied.');
+  }
+
+  function exportDesignBriefPdf() {
+    downloadSimplePdf('ArchiVault_Design_Brief.pdf', 'Project Research and Design Brief', designBriefSummaryLines);
+    setDesignBriefNote('Design brief PDF exported.');
+  }
+
   function handleCadAsset(file: File) {
     const extension = fileExtension(file.name);
     if (!SUPPORTED_CAD_EXTENSIONS.includes(extension)) {
@@ -5443,6 +5824,7 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
   }
 
   return (
+    <ProjectWorkspaceContext.Provider value={{ workspace: projectWorkspace, updateWorkspace }}>
     <div className={normalizedTab === 'site' ? 'space-y-0' : 'space-y-6'}>
       {normalizedTab !== 'site' && <div className="relative rounded-lg border border-white/10 bg-white/[0.03] p-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -5484,6 +5866,136 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
             <h2 className="text-lg font-semibold text-white">Start Here</h2>
             <p className="mt-1 text-sm leading-6 text-cyan-50/80">Choose the task you need. ArchiVault will take you to the right workspace and keep advanced tools grouped inside each lab.</p>
           </div>
+          <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-lg border border-white/10 bg-white/[0.03] p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-semibold text-white">Start Design Assistant</h3>
+                  <p className="mt-1 text-xs text-zinc-400">Connected workflow: Brief &gt; Site &gt; Concept &gt; Bubble &gt; Zoning &gt; Layout &gt; Materials &gt; Report.</p>
+                </div>
+                <span className="rounded border border-cyan-300/30 bg-cyan-300/10 px-3 py-1 text-xs text-cyan-100">Project Planning Progress: {projectProgress}%</span>
+              </div>
+              <div className="mt-4 grid gap-2 md:grid-cols-3 xl:grid-cols-9">
+                {designWorkflowStages.map(([stage, done]) => <div key={stage} className={`rounded-md border p-2 text-center ${done ? 'border-emerald-300/25 bg-emerald-300/10 text-emerald-100' : 'border-white/10 bg-[#11151b] text-zinc-400'}`}><p className="text-xs font-semibold">{stage}</p><p className="mt-1 text-[10px]">{done ? 'Complete' : 'Next'}</p></div>)}
+              </div>
+            </div>
+            <div className="rounded-lg border border-amber-300/20 bg-amber-300/10 p-5">
+              <h3 className="text-base font-semibold text-amber-50">What should I do next?</h3>
+              <p className="mt-2 text-sm leading-6 text-amber-50/85">{nextDesignAction.text}</p>
+              <button className={`${buttonClass()} mt-4`} onClick={() => openTool(nextDesignAction.tab, nextDesignAction.subtool)}>Open Recommended Tool</button>
+            </div>
+          </div>
+          <section className="rounded-lg border border-cyan-300/20 bg-[#080b10] p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-300">Design Assistant</p>
+                <h2 className="mt-2 text-xl font-semibold text-white">Project Research & Design Brief</h2>
+                <p className="mt-1 max-w-3xl text-sm leading-6 text-zinc-400">Collect the project information first, then send it to Site Analysis, Concept Helper, Bubble Diagram, Code Check, Materials, and Reports.</p>
+              </div>
+              <div className="rounded-lg border border-white/10 bg-[#11151b] px-4 py-3">
+                <p className="text-[10px] uppercase tracking-[0.14em] text-zinc-500">Design Readiness Score</p>
+                <p className="mt-1 text-2xl font-bold text-cyan-100">{briefCompletion.score}%</p>
+                <p className="text-xs text-zinc-400">{briefCompletion.label}</p>
+              </div>
+            </div>
+
+            {designBriefNote && <p className="mt-4 rounded-md border border-emerald-300/25 bg-emerald-300/10 p-3 text-xs text-emerald-50">{designBriefNote}</p>}
+
+            <div className="mt-5 grid gap-5 xl:grid-cols-[1fr_360px]">
+              <div className="grid max-h-[680px] gap-4 overflow-auto pr-1 lg:grid-cols-2">
+                {designBriefSections.map((section) => (
+                  <div key={section.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-white">{section.title}</h3>
+                        <p className="mt-1 text-xs leading-5 text-zinc-500">{section.help}</p>
+                      </div>
+                      <span className={`rounded border px-2 py-1 text-[10px] ${Object.values(designBrief[section.id]).some(Boolean) ? 'border-emerald-300/25 bg-emerald-300/10 text-emerald-100' : 'border-white/10 bg-[#11151b] text-zinc-500'}`}>
+                        {Object.values(designBrief[section.id]).some(Boolean) ? 'Started' : 'Empty'}
+                      </span>
+                    </div>
+                    <div className="mt-4 grid gap-3">
+                      {section.fields.map(([field, label, kind]) => {
+                        const value = (designBrief[section.id] as Record<string, string>)[field];
+                        return (
+                          <Field key={`${section.id}-${field}`} label={label}>
+                            {kind === 'textarea' ? (
+                              <textarea
+                                className={`${inputClass()} min-h-20 resize-y`}
+                                value={value}
+                                onChange={(event) => updateDesignBrief(section.id, field, event.target.value)}
+                                placeholder={`Add ${label.toLowerCase()}...`}
+                              />
+                            ) : (
+                              <input
+                                className={inputClass()}
+                                value={value}
+                                onChange={(event) => updateDesignBrief(section.id, field, event.target.value)}
+                                placeholder={field === 'deadline' ? 'YYYY-MM-DD or deadline note' : `Add ${label.toLowerCase()}...`}
+                              />
+                            )}
+                          </Field>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <aside className="space-y-4">
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold text-white">Missing Research</h3>
+                    <span className="rounded border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[10px] text-amber-100">{briefCompletion.missing.length} left</span>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {briefCompletion.missing.length ? briefCompletion.missing.map((item) => <span key={item} className="rounded border border-white/10 bg-[#11151b] px-2 py-1 text-xs text-zinc-300">{item}</span>) : <span className="rounded border border-emerald-300/25 bg-emerald-300/10 px-2 py-1 text-xs text-emerald-100">Research checklist complete</span>}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-cyan-300/20 bg-cyan-300/10 p-4">
+                  <h3 className="text-sm font-semibold text-cyan-50">Live Design Suggestions</h3>
+                  <p className="mt-1 text-xs text-cyan-50/70">What this means for your design, updated as you type.</p>
+                  <div className="mt-3 space-y-2">
+                    {designBriefSuggestions.slice(0, 5).map((suggestion, index) => {
+                      const style = suggestion.type === 'good' ? 'border-emerald-300/25 bg-emerald-300/10 text-emerald-50' : suggestion.type === 'critical' ? 'border-red-300/25 bg-red-300/10 text-red-50' : suggestion.type === 'warning' ? 'border-amber-300/25 bg-amber-300/10 text-amber-50' : suggestion.type === 'idea' ? 'border-cyan-300/25 bg-cyan-300/10 text-cyan-50' : 'border-sky-300/25 bg-sky-300/10 text-sky-50';
+                      const label = suggestion.type === 'good' ? 'Good' : suggestion.type === 'critical' ? 'Critical' : suggestion.type === 'warning' ? 'Warning' : suggestion.type === 'idea' ? 'Design idea' : 'Next';
+                      return (
+                        <div key={`${suggestion.text}-${index}`} className={`rounded-md border p-3 ${style}`}>
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.12em] opacity-80">{label}</p>
+                          <p className="mt-1 text-xs leading-5">{suggestion.text}</p>
+                          {suggestion.action && <button className={`${buttonClass('secondary')} mt-2`} onClick={() => openTool(suggestion.action!.tab, suggestion.action!.subtool)}>{suggestion.action.label}</button>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                  <h3 className="text-sm font-semibold text-white">Live Design Brief Summary</h3>
+                  <div className="mt-3 max-h-64 space-y-2 overflow-auto pr-1">
+                    {designBriefSummaryLines.map((line) => (
+                      <p key={line} className="rounded border border-white/10 bg-[#11151b] p-2 text-xs leading-5 text-zinc-300">{line}</p>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+                  <h3 className="text-sm font-semibold text-white">Connected Actions</h3>
+                  <div className="mt-3 grid gap-2">
+                    <button className={buttonClass()} onClick={() => sendDesignBrief('concept')}>Send to Concept Helper</button>
+                    <button className={buttonClass('secondary')} onClick={() => sendDesignBrief('bubble')}>Send Spaces to Bubble Diagram</button>
+                    <button className={buttonClass('secondary')} onClick={() => sendDesignBrief('site')}>Send Site Data to Site Analysis</button>
+                    <button className={buttonClass('secondary')} onClick={() => sendDesignBrief('code')}>Send Code Notes to Compliance Check</button>
+                    <button className={buttonClass('secondary')} onClick={() => sendDesignBrief('materials')}>Send Scale to Materials</button>
+                    <button className={buttonClass('secondary')} onClick={() => sendDesignBrief('report')}>Add to Project Report</button>
+                    <button className={buttonClass('secondary')} onClick={exportDesignBriefPdf}>Export Design Brief PDF</button>
+                    <button className={buttonClass('secondary')} onClick={copyDesignBriefSummary}>Copy Summary</button>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </section>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             {[
               ['Start Bubble Diagram', 'Plan spaces and relationships before drafting.', 'Ready', 'Planning Lab', 'planning', 'Bubble Diagram'],
@@ -5652,5 +6164,6 @@ export default function Dashboard({ activeTab, setActiveTab }: DashboardProps) {
         </div>
       )}
     </div>
+    </ProjectWorkspaceContext.Provider>
   );
 }
