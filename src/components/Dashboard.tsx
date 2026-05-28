@@ -4669,7 +4669,7 @@ ${notes}
   ] as const;
 
   return (
-    <section className="relative flex h-[calc(100vh-8px)] w-full flex-col overflow-hidden border border-white/10 bg-[#05070a] text-white shadow-2xl lg:-mx-4 lg:-mt-4">
+    <section className="fixed inset-0 z-40 flex h-[100dvh] w-screen flex-col overflow-hidden bg-[#05070a] text-white shadow-2xl">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/10 bg-[#0b0f14] px-3 py-2">
         <div className="min-w-0">
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-cyan-300">Site Analysis</p>
@@ -4688,7 +4688,7 @@ ${notes}
 
       {notice && <p className="mx-3 mt-2 shrink-0 rounded-md border border-emerald-300/25 bg-emerald-300/10 p-2 text-xs text-emerald-50">{notice}</p>}
 
-      <div className={`grid min-h-0 flex-1 gap-0 ${showSiteSidebar && showInsightsPanel ? 'lg:grid-cols-[72px_minmax(0,1fr)_300px] 2xl:grid-cols-[210px_minmax(0,1fr)_310px]' : showSiteSidebar ? 'lg:grid-cols-[72px_minmax(0,1fr)] 2xl:grid-cols-[210px_minmax(0,1fr)]' : showInsightsPanel ? 'lg:grid-cols-[minmax(0,1fr)_300px]' : 'grid-cols-1'}`}>
+      <div className={`grid min-h-0 flex-1 gap-0 ${showSiteSidebar && showInsightsPanel ? 'lg:grid-cols-[64px_minmax(0,1fr)_280px] 2xl:grid-cols-[180px_minmax(0,1fr)_288px]' : showSiteSidebar ? 'lg:grid-cols-[64px_minmax(0,1fr)] 2xl:grid-cols-[180px_minmax(0,1fr)]' : showInsightsPanel ? 'lg:grid-cols-[minmax(0,1fr)_280px]' : 'grid-cols-1'}`}>
         {showSiteSidebar && <aside className="hidden min-h-0 overflow-y-auto border-r border-white/10 bg-[#0b0f14] p-2 lg:block">
           <div className="hidden rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-3 2xl:block">
             <button className="flex w-full items-center justify-between text-left text-xs font-semibold text-cyan-100" onClick={() => setWorkflowGuideOpen((value) => !value)}>
@@ -4718,8 +4718,8 @@ ${notes}
           </div>
         </aside>}
 
-        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#070a0f] p-2">
-          <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-white/10 bg-[#0f141b] p-2">
+        <main className="flex min-h-0 min-w-0 flex-col overflow-hidden bg-[#070a0f] p-1.5 sm:p-2">
+          <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-white/10 bg-[#0f141b] p-1.5 sm:p-2">
             <div className="mb-2 flex shrink-0 flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-base font-semibold text-white">{workspaceNav.find(([id]) => id === siteWorkspace)?.[1]}</h3>
@@ -4751,7 +4751,7 @@ ${notes}
               </div>
             </div>
 
-            <div className="relative min-h-[520px] flex-1 overflow-hidden rounded-2xl border border-cyan-300/20 bg-[#080a0d] shadow-inner md:min-h-0">
+            <div className="relative min-h-[640px] flex-1 overflow-hidden rounded-2xl border border-cyan-300/20 bg-[#080a0d] shadow-inner md:min-h-0">
               {mapMode === 'leaflet' && siteViewMode === '2D' && (
                 <Concept3DErrorBoundary mapError>
                   <LeafletSiteMap site={site} boundary={boundary} activeTool={activeTool} selectedVertexIndex={selectedVertexIndex} showSiteBoundary={showSiteBoundary} mapProvider={mapProvider} googleEnabled={googleMapsEnabled} fitRequest={mapFitRequest} finishBoundary={finishBoundary} setLocationSelected={setLocationSelected} setMapCenter={setMapCenter} setSelectedVertexIndex={setSelectedVertexIndex} setSite={setSite} setBoundary={setBoundary} showNotice={showNotice} />
@@ -4889,14 +4889,14 @@ ${notes}
                 {boundaryWarnings.map((warning) => <span key={warning} className="rounded-lg border border-amber-300/25 bg-black/55 px-2.5 py-1.5 text-amber-100 backdrop-blur">{warning}</span>)}
               </div>
 
-              <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+              {siteViewMode === '2D' && <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
                 {hasSiteBoundary && activeAnalysis === 'macro' && analysisToggles.macroRadius && [18, 30, 44, 58].map((radius) => <circle key={radius} cx="50" cy="46" r={radius} fill="none" stroke="#22d3ee" strokeWidth="0.28" strokeDasharray="2 2" opacity="0.45" />)}
                 {hasSiteBoundary && activeAnalysis === 'solidVoid' && analysisToggles.buildingMass && [[14, 16, 13, 16], [70, 14, 15, 18], [76, 56, 13, 20], [17, 57, 12, 15], [8, 38, 12, 10], [61, 70, 20, 9]].map(([x, y, w, h], index) => <rect key={index} x={x} y={y} width={w} height={h} fill="rgba(0,0,0,.70)" stroke="#111827" strokeWidth="0.3" />)}
                 {hasSiteBoundary && activeAnalysis === 'access' && <><path d="M8 73 C24 66, 35 58, 50 46 S78 26, 92 14" fill="none" stroke="#34d399" strokeWidth="0.8" strokeDasharray="2 1" /><path d="M8 72 L91 72" fill="none" stroke="#fb923c" strokeWidth="1.1" /><path d="M25 84 L66 27" fill="none" stroke="#fde047" strokeWidth="0.7" strokeDasharray="1 1.6" /></>}
                 {hasSiteBoundary && activeAnalysis === 'environmental' && <><path d="M16 70 C34 15, 66 15, 84 70" fill="none" stroke="#fde047" strokeWidth="0.8" strokeDasharray="2 1" /><line x1="15" y1="18" x2="78" y2="82" stroke="#67e8f9" strokeWidth="0.8" /><path d="M78 52 C86 57, 90 63, 93 72" fill="none" stroke="#f87171" strokeWidth="1" strokeDasharray="2 1" /></>}
                 {showSiteBoundary && hasSiteBoundary && <polygon points={boundaryPath} fill="rgba(34,211,238,.16)" stroke="#67e8f9" strokeWidth="0.72" />}
                 {massing.enabled && <g transform={`rotate(${massing.rotation} ${massing.x} ${massing.y})`}><rect x={massing.x - Math.max(5, massing.width / 2)} y={massing.y - Math.max(5, massing.length / 2)} width={Math.max(10, massing.width)} height={Math.max(10, massing.length)} fill="rgba(253,224,71,.24)" stroke="#fde047" strokeWidth="0.55" /><text x={massing.x} y={massing.y} textAnchor="middle" fontSize="2.4" fill="#fef9c3">mass</text></g>}
-              </svg>
+              </svg>}
 
               {!hasSiteBoundary && !helperDismissed && !isDrawingBoundary && <div className="absolute bottom-14 left-4 z-10 max-w-xs rounded-xl border border-amber-300/20 bg-black/60 p-2.5 text-xs text-amber-100 shadow-2xl backdrop-blur"><button className="absolute right-2 top-1 text-[10px] text-amber-100/70 hover:text-white" onClick={() => setHelperDismissed(true)}>X</button><p className="pr-5 font-semibold">Search, then Draw.</p><p className="mt-1 leading-4">Trace your lot with map clicks.</p></div>}
             </div>

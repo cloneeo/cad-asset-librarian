@@ -286,7 +286,7 @@ export default function Concept3DView({ boundary, massing, showSiteBoundary, has
     grid: true,
     massing: threeD.massing,
   });
-  const hasValidBoundary = hasSiteBoundary && showSiteBoundary && boundary.length >= 3;
+  const hasValidBoundary = hasSiteBoundary && boundary.length >= 3;
 
   useEffect(() => {
     setLocalToggles((current) => ({
